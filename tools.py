@@ -2,6 +2,31 @@ from smolagents.tools import tool
 import re
 import requests
 import logging
+from bs4 import BeautifulSoup
+
+def duckduckgo_search_snippets(query: str, max_snippets: int = 3) -> list:
+    """
+    Performs a DuckDuckGo search and extracts text snippets from the results.
+    """
+    logging.debug(f"[duckduckgo_search_snippets] Query: {query}")
+    try:
+        resp = requests.get("https://lite.duckduckgo.com/lite/", params={"q": query}, timeout=10)
+        if not resp.ok:
+            return [f"[Error] Search failed for query: {query}"]
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        results = soup.find_all("a", class_="result-link")[:max_snippets]
+        snippets = []
+
+        for link in results:
+            snippet = link.get_text(strip=True)
+            if snippet:
+                snippets.append(snippet)
+
+        return snippets or ["[No results found]"]
+    except Exception as e:
+        logging.error(f"[duckduckgo_search_snippets] Failed: {e}")
+        return [f"Search error: {e}"]
 
 @tool
 def extract_books(text: str) -> list:
@@ -43,16 +68,48 @@ def search_web(query: str) -> str:
 @tool
 def recommend_similar_books(book_list: list) -> list:
     """
-    Given a list of input books (title + author), suggest other similar books.
+    Given a list of input books (title + author), search the web and suggest other similar books.
 
     Args:
         book_list: A list of dicts with keys 'title' and 'author'.
 
     Returns:
         A list of recommendations, each a dict with:
-            - 'title': the recommended book's title
-            - 'author': the recommended book's author (if known)
-            - 'reason': a short reason why it was recommended
+            - 'title': recommended book's title
+            - 'author': author (if known)
+            - 'reason': why it was recommended
     """
-    # The actual recommendation logic will be handled by the agent via LLM reasoning.
-    return []
+    from smolagents import call_llm  # ensure this is imported for calling your LLM
+
+    all_snippets = ""
+    for book in book_list:
+        query = f"Books similar to '{book['title']}' by {book.get('author', 'unknown author')}"
+        snippets = duckduckgo_search_snippets(query)
+        all_snippets += f"### Search results for {book['title']}:\n" + "\n".join(snippets) + "\n\n"
+
+    # Now ask the LLM to analyze snippets and generate recommendations
+    prompt = f"""You are a book recommendation assistant.
+
+Here are search results for books similar to some user favorites:
+
+{all_snippets}
+
+Based on these, recommend 3 books. For each, include:
+- title
+- author (if known)
+- reason for recommendation (based on search result info)
+
+Return as a list of JSON objects.
+"""
+    response = call_llm(prompt, model="ollama/llama3", api_base="http://localhost:11434")
+
+    try:
+        # Try to parse list of dicts from response (defensive parsing)
+        import json
+        recommendations = json.loads(response)
+        if isinstance(recommendations, list):
+            return recommendations
+    except Exception as e:
+        logging.error(f"Failed to parse LLM response: {e}")
+
+    return [{"title": "Unknown", "author": "Unknown", "reason": "Failed to parse LLM output."}]

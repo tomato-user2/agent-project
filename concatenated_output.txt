@@ -1,0 +1,127 @@
+# agent.py
+from smolagents import ToolCallingAgent, LiteLLMModel, DuckDuckGoSearchTool
+from tools import extract_books, recommend_similar_books
+
+# Local Llama3 via Ollama
+model = LiteLLMModel(
+    model_id="ollama/llama3",
+    api_base="http://localhost:11434"
+)
+
+agent = ToolCallingAgent(
+    tools=[extract_books, DuckDuckGoSearchTool(), recommend_similar_books],
+    model=model,
+    stream_outputs=True,   # optional real-time output
+)
+----------------------------------------
+
+# app.py
+import gradio as gr
+from agent import agent
+
+def chat_with_agent(user_input, chat_history):
+    response = agent.run(user_input)
+    chat_history.append((user_input, response))
+    return chat_history, chat_history
+
+with gr.Blocks() as demo:
+    gr.Markdown("## 📚 Book Recommendation Agent (powered by LLaMA3 + smolagents)")
+    chatbot = gr.Chatbot()
+    msg = gr.Textbox(placeholder="Tell me a few books you like...", label="Your favorite books")
+    clear = gr.Button("Clear")
+
+    msg.submit(chat_with_agent, [msg, chatbot], [chatbot, chatbot])
+    clear.click(lambda: ([], ""), None, [chatbot, msg])
+
+demo.launch()
+
+----------------------------------------
+
+# concatenate_py_files.py
+import os
+
+def concatenate_py_files(output_file):
+    # Get the current directory
+    current_directory = os.getcwd()
+    
+    # List all .py files in the current directory
+    py_files = [f for f in os.listdir(current_directory) if f.endswith('.py')]
+    
+    with open(output_file, 'w', encoding='utf-8') as outfile:
+        for py_file in py_files:
+            # Write the file name as a header
+            outfile.write(f"# {py_file}\n")
+            # Write the content of the file
+            with open(py_file, 'r', encoding='utf-8') as infile:
+                outfile.write(infile.read())
+            # Add a separator line
+            outfile.write("\n" + "-"*40 + "\n\n")
+
+if __name__ == "__main__":
+    output_file_name = "concatenated_output.txt"
+    concatenate_py_files(output_file_name)
+    print(f"All .py files have been concatenated into {output_file_name}.")
+
+----------------------------------------
+
+# tools.py
+from smolagents.tools import tool
+import re
+import requests
+import logging
+
+@tool
+def extract_books(text: str) -> list:
+    """
+    Use LLM reasoning to extract a list of books from the user's input.
+
+    Args:
+        text: Free-form user input describing books they liked.
+
+    Returns:
+        A list of dictionaries, each with keys:
+            - 'title': the title of the book
+            - 'author': the author of the book (if known)
+    """
+    # We’ll delegate extraction to the LLM itself.
+    # This is just a placeholder tool schema, the model will generate the response
+    return []
+
+@tool
+def search_web(query: str) -> str:
+    """
+    Perform a web search for information about books, authors, or topics.
+
+    Args:
+        query (str): The search query to look up.
+
+    Returns:
+        str: A text snippet or summary from the search results.
+    """
+    logging.debug(f"[search_web] Searching: {query}")
+    try:
+        resp = requests.get("https://lite.duckduckgo.com/lite/", params={"q": query}, timeout=10)
+        if resp.ok:
+            return resp.text[:1000]
+    except Exception as e:
+        logging.error(f"[search_web] Failed: {e}")
+        return f"Search error: {e}"
+
+@tool
+def recommend_similar_books(book_list: list) -> list:
+    """
+    Given a list of input books (title + author), suggest other similar books.
+
+    Args:
+        book_list: A list of dicts with keys 'title' and 'author'.
+
+    Returns:
+        A list of recommendations, each a dict with:
+            - 'title': the recommended book's title
+            - 'author': the recommended book's author (if known)
+            - 'reason': a short reason why it was recommended
+    """
+    # The actual recommendation logic will be handled by the agent via LLM reasoning.
+    return []
+----------------------------------------
+
