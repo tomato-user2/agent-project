@@ -1,56 +1,58 @@
-from smolagents import DuckDuckGoSearchTool
-from smolagents import Tool
-import random
-from huggingface_hub import list_models
+from smolagents.tools import tool
+import re
+import requests
+import logging
 
+@tool
+def extract_books(text: str) -> list:
+    """
+    Use LLM reasoning to extract a list of books from the user's input.
 
-# Initialize the DuckDuckGo search tool
-#search_tool = DuckDuckGoSearchTool()
+    Args:
+        text: Free-form user input describing books they liked.
 
+    Returns:
+        A list of dictionaries, each with keys:
+            - 'title': the title of the book
+            - 'author': the author of the book (if known)
+    """
+    # We’ll delegate extraction to the LLM itself.
+    # This is just a placeholder tool schema, the model will generate the response
+    return []
 
-class WeatherInfoTool(Tool):
-    name = "weather_info"
-    description = "Fetches dummy weather information for a given location."
-    inputs = {
-        "location": {
-            "type": "string",
-            "description": "The location to get weather information for."
-        }
-    }
-    output_type = "string"
+@tool
+def search_web(query: str) -> str:
+    """
+    Perform a web search for information about books, authors, or topics.
 
-    def forward(self, location: str):
-        # Dummy weather data
-        weather_conditions = [
-            {"condition": "Rainy", "temp_c": 15},
-            {"condition": "Clear", "temp_c": 25},
-            {"condition": "Windy", "temp_c": 20}
-        ]
-        # Randomly select a weather condition
-        data = random.choice(weather_conditions)
-        return f"Weather in {location}: {data['condition']}, {data['temp_c']}°C"
+    Args:
+        query (str): The search query to look up.
 
-class HubStatsTool(Tool):
-    name = "hub_stats"
-    description = "Fetches the most downloaded model from a specific author on the Hugging Face Hub."
-    inputs = {
-        "author": {
-            "type": "string",
-            "description": "The username of the model author/organization to find models from."
-        }
-    }
-    output_type = "string"
+    Returns:
+        str: A text snippet or summary from the search results.
+    """
+    logging.debug(f"[search_web] Searching: {query}")
+    try:
+        resp = requests.get("https://lite.duckduckgo.com/lite/", params={"q": query}, timeout=10)
+        if resp.ok:
+            return resp.text[:1000]
+    except Exception as e:
+        logging.error(f"[search_web] Failed: {e}")
+        return f"Search error: {e}"
 
-    def forward(self, author: str):
-        try:
-            # List models from the specified author, sorted by downloads
-            models = list(list_models(author=author, sort="downloads", direction=-1, limit=1))
-            
-            if models:
-                model = models[0]
-                return f"The most downloaded model by {author} is {model.id} with {model.downloads:,} downloads."
-            else:
-                return f"No models found for author {author}."
-        except Exception as e:
-            return f"Error fetching models for {author}: {str(e)}"
+@tool
+def recommend_similar_books(book_list: list) -> list:
+    """
+    Given a list of input books (title + author), suggest other similar books.
 
+    Args:
+        book_list: A list of dicts with keys 'title' and 'author'.
+
+    Returns:
+        A list of recommendations, each a dict with:
+            - 'title': the recommended book's title
+            - 'author': the recommended book's author (if known)
+            - 'reason': a short reason why it was recommended
+    """
+    # The actual recommendation logic will be handled by the agent via LLM reasoning.
+    return []
