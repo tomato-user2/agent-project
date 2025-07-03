@@ -177,7 +177,13 @@ Return as a JSON list like this:
         recommendations = extract_json_array(response)
         if not isinstance(recommendations, list):
             raise ValueError("Parsed JSON is not a list")
-        return recommendations
+        return {
+            "search_snippets": all_snippets,
+            "llm_prompt": prompt,
+            "llm_response": response,
+            "recommendations": recommendations,
+                }
+
     except Exception as e:
         logging.error(f"[recommend_similar_books] Failed to parse LLM response: {e}\nResponse was:\n{response}")
         # Return a safe fallback to avoid crashing

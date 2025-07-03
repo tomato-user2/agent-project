@@ -3,7 +3,18 @@ from agent import agent
 
 def chat_with_agent(user_input, chat_history):
     response = agent.run(user_input)
-    chat_history.append((user_input, response))
+    
+    # Detect if response is a dict with debugging info
+    if isinstance(response, dict) and "recommendations" in response:
+        display_text = "### Search snippets:\n" + response["search_snippets"]
+        display_text += "\n\n### LLM Prompt:\n" + response["llm_prompt"]
+        display_text += "\n\n### LLM Raw Response:\n" + response["llm_response"]
+        display_text += "\n\n### Final Recommendations:\n"
+        for rec in response["recommendations"]:
+            display_text += f"- {rec['title']} by {rec.get('author', 'Unknown')} (Reason: {rec.get('reason', 'N/A')})\n"
+        chat_history.append((user_input, display_text))
+    else:
+        chat_history.append((user_input, response))
     return chat_history, chat_history
 
 with gr.Blocks() as demo:
