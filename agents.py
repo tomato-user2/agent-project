@@ -73,6 +73,7 @@ async def extract_books_node(state):
 
     return {"extracted_books": books}
 
+# Node 2
 async def recommend_books_node(state):
     extracted_books = state.get("extracted_books", [])
     reasoning_steps = []
@@ -124,6 +125,52 @@ async def recommend_books_node(state):
         "reasoning": "\n".join(reasoning_steps)
     }
 
+# Node 3: Reason about the search results and generate recommendations
+async def reasoning_node(state):
+    recommendations = state.get("recommendations", [])
+    initial_reasoning = state.get("reasoning", "")
+    
+    if not recommendations:
+        final_reasoning = initial_reasoning + "\nNo recommendations found to reason about."
+        return {"final_recommendations": [], "final_reasoning": final_reasoning}
+    
+    # Format recommendations as input for the LLM
+    recommendations_text = "\n".join(
+        [f"Title: {rec['title']}\nLink: {rec['link']}\nSnippet: {rec['snippet']}\n" for rec in recommendations]
+    )
+    
+    prompt = (
+        "You are a helpful book recommendation expert. You are given a list of books retrieved from web search. "
+        "Analyze the list and select the most relevant book recommendations. Explain why you recommend each book. "
+        "Output as JSON list like this:\n"
+        '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
+        f"Books found from search:\n{recommendations_text}"
+    )
+    
+    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
+    content = response['message']['content']
+
+    print("[reasoning_node] LLM raw response:", content)
+    await logger.log(f"[reasoning_node] LLM response: {content}")
+
+    # Extract JSON-like structure
+    final_recommendations = extract_json_array(content)
+
+    if not final_recommendations:
+        await logger.log("[reasoning_node] Failed to extract final recommendations from LLM response.")
+    else:
+        await logger.log(f"[reasoning_node] Final recommendations: {final_recommendations}")
+
+    # Combine previous reasoning with the final reasoning
+    final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
+    for rec in final_recommendations:
+        final_reasoning += f"✅ Recommended: {rec.get('title', 'Unknown')} - {rec.get('reason', 'No reason provided.')}\n"
+
+    return {
+        "final_recommendations": final_recommendations,
+        "final_reasoning": final_reasoning
+    }
+
 
 # Build the graph
 def build_graph():
@@ -131,9 +178,12 @@ def build_graph():
 
     graph.add_node("extract_books", extract_books_node)
     graph.add_node("recommend_books", recommend_books_node)
+    graph.add_node("reasoning", reasoning_node)
 
+    # Define edges
     graph.add_edge("extract_books", "recommend_books")
-    graph.add_edge("recommend_books", END)
+    graph.add_edge("recommend_books", "reasoning")
+    graph.add_edge("reasoning", END)
 
     graph.set_entry_point("extract_books")
     return graph.compile()

@@ -11,11 +11,12 @@ async def run_book_recommender(user_input):
     async for state in graph.astream(initial_state):
         final_state = state
 
-    recommendations = final_state.get("recommendations", [])
-    reasoning = final_state.get("reasoning", "")
+    # NEW: Get the final output fields
+    recommendations = final_state.get("final_recommendations", [])
+    reasoning = final_state.get("final_reasoning", "")
 
     recommendations_text = "\n\n".join(
-        [f"📘 {rec['title']}\n🔗 {rec['link']}\n📝 {rec['snippet']}" for rec in recommendations]
+        [f"📘 {rec['title']}\n🔗 {rec.get('link', '')}\n💡 {rec.get('reason', '')}" for rec in recommendations]
     ) or "No recommendations found."
 
     return recommendations_text, reasoning
