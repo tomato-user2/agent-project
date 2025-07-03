@@ -8,6 +8,29 @@ import json
 # Optional: Configure logging
 logging.basicConfig(level=logging.INFO)
 
+def extract_json_array(text):
+    """
+    Extract the first JSON array from a text string,
+    ignoring any leading or trailing non-JSON text.
+    """
+    # Try to find a JSON array with a regex (non-greedy)
+    match = re.search(r"\[\s*\{.*?\}\s*\]", text, re.DOTALL)
+    if match:
+        candidate = match.group(0)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logging.error(f"JSON decode error on regex candidate: {e}")
+    # Fallback: take substring from first [ to last ]
+    start = text.find('[')
+    end = text.rfind(']')
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end+1]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logging.error(f"JSON decode error on fallback candidate: {e}")
+    raise ValueError("No valid JSON array found in text")
 
 def call_llm(prompt: str, model: str = "ollama/llama3", api_base: str = "http://localhost:11434") -> str:
     """
@@ -151,35 +174,11 @@ Return as a JSON list like this:
     response = call_llm(prompt, model="ollama/llama3", api_base="http://localhost:11434")
 
     try:
-        # Extract just the JSON array
-        match = re.search(r"\[\s*{.*?}\s*\]", response, re.DOTALL)
-        if match:
-            cleaned_json = match.group(0)
-            recommendations = json.loads(cleaned_json)
-            if isinstance(recommendations, list):
-                return recommendations
-        raise ValueError("No valid JSON array found in LLM output.")
+        recommendations = extract_json_array(response)
+        if not isinstance(recommendations, list):
+            raise ValueError("Parsed JSON is not a list")
+        return recommendations
     except Exception as e:
-        logging.error(f"[recommend_similar_books] Failed to parse LLM response: {e}\nResponse: {response}")
+        logging.error(f"[recommend_similar_books] Failed to parse LLM response: {e}\nResponse was:\n{response}")
+        # Return a safe fallback to avoid crashing
         return [{"title": "Unknown", "author": "Unknown", "reason": "Failed to parse LLM output."}]
-
-
-@tool
-def search_web(query: str) -> str:
-    """
-    Perform a web search for information about books, authors, or topics.
-
-    Args:
-        query: The search query to look up.
-
-    Returns:
-        A brief snippet of search result text.
-    """
-    logging.debug(f"[search_web] Searching: {query}")
-    try:
-        resp = requests.get("https://lite.duckduckgo.com/lite/", params={"q": query}, timeout=10)
-        if resp.ok:
-            return resp.text[:1000]
-    except Exception as e:
-        logging.error(f"[search_web] Failed: {e}")
-        return f"Search error: {e}"

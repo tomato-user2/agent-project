@@ -8,7 +8,7 @@ model = LiteLLMModel(
 )
 
 agent = ToolCallingAgent(
-    tools=[extract_books, DuckDuckGoSearchTool(), recommend_similar_books],
+    tools=[extract_books, recommend_similar_books],
     model=model,
     stream_outputs=True,   # optional real-time output
 )
