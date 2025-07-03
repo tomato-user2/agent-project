@@ -3,3 +3,5 @@ ollama
 gradio
 httpx
 selectolax
+aiohttp
+huggingface_hub
