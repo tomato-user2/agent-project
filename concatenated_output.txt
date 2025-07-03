@@ -1,56 +1,115 @@
-# agent.py
-from smolagents import ToolCallingAgent, LiteLLMModel, DuckDuckGoSearchTool
-from tools import extract_books, recommend_similar_books
+# agents.py
+from langgraph.graph import StateGraph, END
+from search import duckduckgo_search
+import ollama
+import asyncio
+import json
 
-# Local Llama3 via Ollama
-model = LiteLLMModel(
-    model_id="ollama/llama3",
-    api_base="http://localhost:11434"
-)
+# Node 1: Extract books from user input
+async def extract_books_node(state):
+    user_input = state.get("user_input", "")
+    prompt = (
+        f"Extract all book titles and authors from the following text. "
+        "If an author is missing, fill it in using your knowledge. "
+        "Output as a JSON list of dicts like this: "
+        "[{{'title': '...', 'author': '...'}}, ...].\n\n"
+        f"User input: {user_input}"
+    )
+    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
 
-agent = ToolCallingAgent(
-    tools=[extract_books, recommend_similar_books],
-    model=model,
-    stream_outputs=True,   # optional real-time output
-)
+    try:
+        books = json.loads(response['message']['content'])
+    except Exception:
+        books = []
+
+    return {"extracted_books": books}
+
+# Node 2: Recommend similar books using DuckDuckGo search
+async def recommend_books_node(state):
+    extracted_books = state.get("extracted_books", [])
+    reasoning_steps = []
+    recommended_books = []
+
+    if not extracted_books:
+        reasoning_steps.append("No books extracted from the input. Check if the extraction failed.")
+        return {"recommendations": [], "reasoning": "\n".join(reasoning_steps)}
+
+    for book in extracted_books:
+        query = f"Books similar to '{book['title']}' by {book['author']}"
+        reasoning_steps.append(f"Searching DuckDuckGo with query: {query}")
+        search_results = await duckduckgo_search(query)
+
+        if not search_results:
+            reasoning_steps.append(f"No results found for: {query}")
+            continue
+
+        for res in search_results:
+            recommended_books.append({
+                "title": res["title"],
+                "link": res["link"],
+                "snippet": res["snippet"]
+            })
+            reasoning_steps.append(f"✅ Found: {res['title']} ({res['link']})")
+
+    if not recommended_books:
+        reasoning_steps.append("No recommendations found across all queries.")
+
+    return {
+        "recommendations": recommended_books,
+        "reasoning": "\n".join(reasoning_steps)
+    }
+
+# Build the graph
+def build_graph():
+    graph = StateGraph(dict)
+
+    graph.add_node("extract_books", extract_books_node)
+    graph.add_node("recommend_books", recommend_books_node)
+
+    graph.add_edge("extract_books", "recommend_books")
+    graph.add_edge("recommend_books", END)
+
+    graph.set_entry_point("extract_books")
+    return graph.compile()
+
 ----------------------------------------
 
 # app.py
 import gradio as gr
-from agent import agent
+from agents import build_graph
+import asyncio
 
-def chat_with_agent(user_input, chat_history):
-    response = agent.run(user_input)
-    
-    # Detect if response is a dict with debugging info
-    if isinstance(response, dict) and "recommendations" in response:
-        display_text = "### Search snippets:\n" + response["search_snippets"]
-        display_text += "\n\n### LLM Prompt:\n" + response["llm_prompt"]
-        display_text += "\n\n### LLM Raw Response:\n" + response["llm_response"]
-        display_text += "\n\n### Final Recommendations:\n"
-        for rec in response["recommendations"]:
-            display_text += f"- {rec['title']} by {rec.get('author', 'Unknown')} (Reason: {rec.get('reason', 'N/A')})\n"
-        chat_history.append((user_input, display_text))
-    else:
-        chat_history.append((user_input, response))
-    return chat_history, chat_history
+# Build the LangGraph once
+graph = build_graph()
 
+async def run_book_recommender(user_input):
+    initial_state = {"user_input": user_input}
+
+    # Consume the generator until completion
+    async for state in graph.astream(initial_state):
+        final_state = state  # This keeps updating with each step
+
+    recommendations = final_state.get("recommendations", [])
+    reasoning = final_state.get("reasoning", "")
+
+    recommendations_text = "\n\n".join(
+        [f"📘 {rec['title']}\n🔗 {rec['link']}\n📝 {rec['snippet']}" for rec in recommendations]
+    ) or "No recommendations found."
+
+    return recommendations_text, reasoning
+
+# Gradio UI
 with gr.Blocks() as demo:
-    gr.Markdown("## 📚 Book Recommendation Agent (powered by LLaMA3 + smolagents)")
-    chatbot = gr.Chatbot()
-    msg = gr.Textbox(placeholder="Tell me a few books you like...", label="Your favorite books")
-    submit = gr.Button("Submit")  # Create a submit button
-    clear = gr.Button("Clear")
+    gr.Markdown("# 📚 AI Book Recommender")
+    user_input = gr.Textbox(label="Tell me some books you like")
+    recommend_btn = gr.Button("Get Recommendations")
+    recommendations_output = gr.Textbox(label="Recommended Books")
+    reasoning_output = gr.Textbox(label="Reasoning Steps")
 
-    # Connect the submit button to the chat_with_agent function
-    submit.click(chat_with_agent, [msg, chatbot], [chatbot, chatbot])
-    
-    # Keep the existing functionality for the Enter key
-    msg.submit(chat_with_agent, [msg, chatbot], [chatbot, chatbot])
-    
-    clear.click(lambda: ([], ""), None, [chatbot, msg])
+    recommend_btn.click(run_book_recommender, inputs=user_input, outputs=[recommendations_output, reasoning_output])
 
-demo.launch()
+if __name__ == "__main__":
+    demo.launch()
 
 ----------------------------------------
 
@@ -81,198 +140,27 @@ if __name__ == "__main__":
 
 ----------------------------------------
 
-# tools.py
-from smolagents.tools import tool
-import re
-import requests
-import logging
-from bs4 import BeautifulSoup
-import json
+# search.py
+import httpx
+from selectolax.parser import HTMLParser
 
-# Optional: Configure logging
-logging.basicConfig(level=logging.INFO)
-
-def extract_json_array(text):
-    """
-    Extract the first JSON array from a text string,
-    ignoring any leading or trailing non-JSON text.
-    """
-    # Try to find a JSON array with a regex (non-greedy)
-    match = re.search(r"\[\s*\{.*?\}\s*\]", text, re.DOTALL)
-    if match:
-        candidate = match.group(0)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as e:
-            logging.error(f"JSON decode error on regex candidate: {e}")
-    # Fallback: take substring from first [ to last ]
-    start = text.find('[')
-    end = text.rfind(']')
-    if start != -1 and end != -1 and end > start:
-        candidate = text[start:end+1]
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as e:
-            logging.error(f"JSON decode error on fallback candidate: {e}")
-    raise ValueError("No valid JSON array found in text")
-
-def call_llm(prompt: str, model: str = "ollama/llama3", api_base: str = "http://localhost:11434") -> str:
-    """
-    Calls a local LLM (e.g., via Ollama HTTP API) with a prompt.
-
-    Args:
-        prompt (str): The input prompt for the LLM.
-        model (str): The model to use, e.g., "ollama/llama3".
-        api_base (str): The base URL of the model endpoint.
-
-    Returns:
-        str: The generated text from the model.
-    """
-    try:
-        response = requests.post(
-            f"{api_base}/api/generate",
-            json={"model": model.replace("ollama/", ""), "prompt": prompt, "stream": False},
-            timeout=30,
-        )
-        response.raise_for_status()
-        return response.json()["response"]
-    except Exception as e:
-        logging.error(f"[call_llm] Failed to call LLM: {e}")
-        return ""
-
-
-def duckduckgo_search_snippets(query: str, max_snippets: int = 3) -> list:
-    """
-    Performs a DuckDuckGo search and extracts text snippets from the results.
-    """
-    logging.debug(f"[duckduckgo_search_snippets] Query: {query}")
-    try:
-        resp = requests.get("https://lite.duckduckgo.com/lite/", params={"q": query}, timeout=10)
-        if not resp.ok:
-            return [f"[Error] Search failed for query: {query}"]
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        results = soup.find_all("a", class_="result-link")[:max_snippets]
-        snippets = []
-
-        for link in results:
-            snippet = link.get_text(strip=True)
-            if snippet:
-                snippets.append(snippet)
-
-        return snippets or ["[No results found]"]
-    except Exception as e:
-        logging.error(f"[duckduckgo_search_snippets] Failed: {e}")
-        return [f"Search error: {e}"]
-
-
-@tool
-def extract_books(text: str) -> list:
-    """
-    Extracts book titles and authors from user input.
-
-    Args:
-        text: Free-form user input describing books they liked.
-
-    Returns:
-        A list of dictionaries with:
-            - 'title': Title of the book
-            - 'author': Author of the book (if known or added via search)
-    """
-    logging.debug(f"[extract_books] Input: {text}")
-
-    prompt = f"""Extract all books and their authors from this text:
-
-{text}
-
-Return a JSON list like this:
-[
-  {{
-    "title": "Book Title",
-    "author": "Author Name"
-  }},
-  ...
-]
-"""
-
-    try:
-        response = call_llm(prompt)
-        # Try to extract JSON block from response
-        match = re.search(r"\[\s*{.*?}\s*\]", response, re.DOTALL)
-        if match:
-            cleaned_json = match.group(0)
-            parsed = json.loads(cleaned_json)
-            if isinstance(parsed, list):
-                return parsed
-        raise ValueError("No valid JSON array found")
-    except Exception as e:
-        logging.error(f"[extract_books] Failed: {e}\nLLM response: {response}")
-        return [{"title": "Unknown", "author": "Unknown"}]
-
-
-@tool
-def recommend_similar_books(book_list: list[dict]) -> list[dict]:
-    """
-    Given a list of books, search the web and suggest similar books.
-
-    Args:
-        book_list (list of dict): A list of dictionaries, each with:
-            - 'title' (str): The title of the book.
-            - 'author' (str): The author of the book.
-
-    Returns:
-        list of dict: A list of recommended books. Each dictionary contains:
-            - 'title' (str): Title of the recommended book.
-            - 'author' (str): Author of the recommended book.
-            - 'reason' (str): Explanation of why it was recommended.
-    """
-
-    all_snippets = ""
-    for book in book_list:
-        query = f"Books similar to '{book['title']}' by {book.get('author', 'unknown author')}"
-        snippets = duckduckgo_search_snippets(query)
-        all_snippets += f"### Search results for {book['title']}:\n" + "\n".join(snippets) + "\n\n"
-
-    prompt = f"""You are a book recommendation assistant.
-
-Here are search results for books similar to user favorites:
-
-{all_snippets}
-
-Based on these, recommend 3 books. For each, include:
-- title
-- author (if known)
-- reason for recommendation (based on search result info)
-
-ONLY Return as a JSON list like this:
-[
-  {{
-    "title": "...",
-    "author": "...",
-    "reason": "..."
-  }},
-  ...
-]
-NO explanations before or after the JSON block.
-"""
-
-    response = call_llm(prompt, model="ollama/llama3", api_base="http://localhost:11434")
-
-    try:
-        recommendations = extract_json_array(response)
-        if not isinstance(recommendations, list):
-            raise ValueError("Parsed JSON is not a list")
-        return {
-            "search_snippets": all_snippets,
-            "llm_prompt": prompt,
-            "llm_response": response,
-            "recommendations": recommendations,
-                }
-
-    except Exception as e:
-        logging.error(f"[recommend_similar_books] Failed to parse LLM response: {e}\nResponse was:\n{response}")
-        # Return a safe fallback to avoid crashing
-        return [{"title": "Unknown", "author": "Unknown", "reason": "Failed to parse LLM output."}]
+async def duckduckgo_search(query, max_results=5):
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=10)
+    html = HTMLParser(response.text)
+    results = []
+    # DuckDuckGo uses div.result for each result block
+    for result in html.css("div.result")[:max_results]:
+        title_el = result.css_first("a.result__a")
+        snippet_el = result.css_first(".result__snippet")
+        if title_el and snippet_el:
+            title = title_el.text(strip=True)
+            link = title_el.attributes.get("href", "")
+            snippet = snippet_el.text(strip=True)
+            results.append({"title": title, "link": link, "snippet": snippet})
+    return results
 
 ----------------------------------------
 

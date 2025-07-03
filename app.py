@@ -8,9 +8,8 @@ graph = build_graph()
 async def run_book_recommender(user_input):
     initial_state = {"user_input": user_input}
 
-    # Consume the generator until completion
     async for state in graph.astream(initial_state):
-        final_state = state  # This keeps updating with each step
+        final_state = state
 
     recommendations = final_state.get("recommendations", [])
     reasoning = final_state.get("reasoning", "")
@@ -26,8 +25,8 @@ with gr.Blocks() as demo:
     gr.Markdown("# 📚 AI Book Recommender")
     user_input = gr.Textbox(label="Tell me some books you like")
     recommend_btn = gr.Button("Get Recommendations")
-    recommendations_output = gr.Textbox(label="Recommended Books")
-    reasoning_output = gr.Textbox(label="Reasoning Steps")
+    recommendations_output = gr.Textbox(label="Recommended Books", lines=10)
+    reasoning_output = gr.Textbox(label="Reasoning / Debug Log", lines=15)
 
     recommend_btn.click(run_book_recommender, inputs=user_input, outputs=[recommendations_output, reasoning_output])
 
