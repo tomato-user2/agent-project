@@ -1,16 +1,22 @@
 # agents.py
-import os
+
+from langgraph.graph import StateGraph, END
+from search import duckduckgo_search
+from huggingface_hub import InferenceClient
+import asyncio
 import re
 import json
-import asyncio
-from huggingface_hub import InferenceClient
+import os
 
-# Initialize HuggingFace InferenceClient with your HF API token
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
-if not HF_API_TOKEN:
-    raise RuntimeError("Please set the HF_API_TOKEN environment variable.")
+# Load your Hugging Face token from environment variables
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
-client = InferenceClient(api_key=HF_API_TOKEN)
+# Initialize the Hugging Face inference client
+# Replace 'meta-llama/Meta-Llama-3-8b-chat-hf' with your preferred model
+hf_client = InferenceClient(
+    model="meta-llama/Meta-Llama-3-8b-chat-hf",
+    token=HF_API_TOKEN,
+)
 
 class AsyncLogger:
     def __init__(self):
@@ -32,31 +38,30 @@ class AsyncLogger:
 logger = AsyncLogger()
 
 def extract_json_array(text):
-    # Extract JSON array from anywhere in the text
+    # Extract JSON block from anywhere in the text
     pattern = r"(\[.*?\])"  # non-greedy match to get the smallest bracketed block
     matches = re.findall(pattern, text, flags=re.DOTALL)
+
     for candidate in matches:
         try:
+            # Attempt to load as JSON
             return json.loads(candidate)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"json.loads error: {e}")
             continue
+
     return []
 
-async def hf_text_generation(prompt, model="google/flan-t5-large", max_new_tokens=256):
-    # The HuggingFace InferenceClient is synchronous, so wrap it in a thread executor for async compatibility
-    loop = asyncio.get_running_loop()
-
-    def blocking_call():
-        outputs = client.text_generation(
-            prompt,
-            model=model,
-            max_new_tokens=max_new_tokens,
-        )
-        # outputs is usually a list of dicts with 'generated_text'
-        return outputs[0]['generated_text']
-
-    result = await loop.run_in_executor(None, blocking_call)
-    return result
+# Helper to query Hugging Face
+async def hf_chat(prompt: str) -> str:
+    print("[hf_chat] Sending prompt to Hugging Face Inference API")
+    response = hf_client.text_generation(
+        prompt=prompt,
+        max_new_tokens=512,
+        temperature=0.7,
+        stop_sequences=["\n\n"],
+    )
+    return response.strip()
 
 # Node 1: Extract books from user input
 async def extract_books_node(state):
@@ -69,7 +74,7 @@ async def extract_books_node(state):
         '[{"title": "...", "author": "..."}, ...]\n\n'
         f"User input: {user_input}"
     )
-    content = await hf_text_generation(prompt)
+    content = await hf_chat(prompt)
 
     print("[extract_books_node] LLM raw response:", content)
     await logger.log(f"[extract_books_node] LLM response: {content}")
@@ -83,11 +88,9 @@ async def extract_books_node(state):
 
     print("[extract_books_node] Extracted books:", books)
 
-    return {"extracted_books": books or []}
+    return {"extracted_books": books}
 
-# Node 2: Recommend books using DuckDuckGo search
-from search import duckduckgo_search  # keep your existing search.py
-
+# Node 2: Search for similar books
 async def recommend_books_node(state):
     extracted_books = state.get("extracted_books", [])
     reasoning_steps = []
@@ -139,15 +142,16 @@ async def recommend_books_node(state):
         "reasoning": "\n".join(reasoning_steps)
     }
 
-# Node 3: Reason about search results and generate recommendations
+# Node 3: Reason over the search results
 async def reasoning_node(state):
     recommendations = state.get("recommendations", [])
     initial_reasoning = state.get("reasoning", "")
     
     if not recommendations:
         final_reasoning = initial_reasoning + "\nNo recommendations found to reason about."
-        return {"final_recommendations": [], "final_reasoning": final_reasoning}
-    
+        return {"final_recommendations": [], "reasoning": {"final_recommendations": [], "final_reasoning": final_reasoning}}
+
+    # Format recommendations for LLM
     recommendations_text = "\n".join(
         [f"Title: {rec['title']}\nLink: {rec['link']}\nSnippet: {rec['snippet']}\n" for rec in recommendations]
     )
@@ -161,11 +165,12 @@ async def reasoning_node(state):
         f"Books found from search:\n{recommendations_text}"
     )
 
-    content = await hf_text_generation(prompt)
+    content = await hf_chat(prompt)
 
     print("[reasoning_node] LLM raw response:", content)
     await logger.log(f"[reasoning_node] LLM response: {content}")
 
+    # Extract JSON list
     final_recommendations = extract_json_array(content)
 
     if not final_recommendations:
@@ -173,6 +178,7 @@ async def reasoning_node(state):
     else:
         await logger.log(f"[reasoning_node] Final recommendations: {final_recommendations}")
 
+    # Build final reasoning text
     final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
     for rec in final_recommendations:
         final_reasoning += f"✅ Recommended: {rec.get('title', 'Unknown')} - {rec.get('reason', 'No reason provided.')}\n"
@@ -183,14 +189,11 @@ async def reasoning_node(state):
     await logger.log(f"[reasoning_node] Final reasoning:\n{final_reasoning}")
 
     return {
-        "final_recommendations": final_recommendations or [],
-        "final_reasoning": final_reasoning
+        "final_recommendations": final_recommendations,
+        "reasoning": {"final_recommendations": final_recommendations, "final_reasoning": final_reasoning}
     }
 
-
-# Build the graph (import your StateGraph and END from langgraph.graph)
-from langgraph.graph import StateGraph, END
-
+# Build the graph
 def build_graph():
     graph = StateGraph(dict)
 
