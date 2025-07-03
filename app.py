@@ -11,9 +11,12 @@ async def run_book_recommender(user_input):
     async for state in graph.astream(initial_state):
         final_state = state
 
-    # NEW: Get the final output fields
-    recommendations = final_state.get("final_recommendations", [])
-    reasoning = final_state.get("final_reasoning", "")
+    print("[app.py] Final state:", final_state)
+
+    # Access the nested "reasoning" key
+    reasoning_data = final_state.get("reasoning", {})
+    recommendations = reasoning_data.get("final_recommendations", [])
+    reasoning = reasoning_data.get("final_reasoning", "")
 
     recommendations_text = "\n\n".join(
         [f"📘 {rec['title']}\n🔗 {rec.get('link', '')}\n💡 {rec.get('reason', '')}" for rec in recommendations]

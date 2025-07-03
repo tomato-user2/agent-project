@@ -27,22 +27,18 @@ class AsyncLogger:
 logger = AsyncLogger()
 
 def extract_json_array(text):
-    # Try to extract the list from the entire text by searching for a list literal
-    pattern = r"(\[.*\])"
+    # Extract JSON block from anywhere in the text
+    pattern = r"(\[.*?\])"  # non-greedy match to get the smallest bracketed block
     matches = re.findall(pattern, text, flags=re.DOTALL)
-    if not matches:
-        return []
 
     for candidate in matches:
         try:
-            # Safely evaluate the python-like list/dict string
-            data = ast.literal_eval(candidate)
-            # Convert to JSON string and parse to verify
-            json_str = json.dumps(data)
-            return json.loads(json_str)
-        except Exception as e:
-            print(f"ast.literal_eval/json error: {e}")
+            # Attempt to load as JSON
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            print(f"json.loads error: {e}")
             continue
+
     return []
 
 # Node 1: Extract books from user input
@@ -140,12 +136,14 @@ async def reasoning_node(state):
     )
     
     prompt = (
-        "You are a helpful book recommendation expert. You are given a list of books retrieved from web search. "
-        "Analyze the list and select the most relevant book recommendations. Explain why you recommend each book. "
-        "Output as JSON list like this:\n"
-        '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
-        f"Books found from search:\n{recommendations_text}"
-    )
+    "You are a helpful book recommendation expert. You are given a web search result. "
+    "Analyze it and select the most relevant book recommendations. Explain why you recommend each book. "
+    "Output only a JSON list like this:\n"
+    '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
+    "Do not add any explanations, comments, or extra text. Only output the JSON list.\n\n"
+    f"Books found from search:\n{recommendations_text}"
+)
+
     
     response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
     content = response['message']['content']
@@ -165,6 +163,11 @@ async def reasoning_node(state):
     final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
     for rec in final_recommendations:
         final_reasoning += f"✅ Recommended: {rec.get('title', 'Unknown')} - {rec.get('reason', 'No reason provided.')}\n"
+
+    print("[reasoning_node] Final recommendations extracted:", final_recommendations)
+    print("[reasoning_node] Final reasoning:\n", final_reasoning)
+    await logger.log(f"[reasoning_node] Final recommendations extracted: {final_recommendations}")
+    await logger.log(f"[reasoning_node] Final reasoning:\n{final_reasoning}")
 
     return {
         "final_recommendations": final_recommendations,
