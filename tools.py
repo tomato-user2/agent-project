@@ -160,7 +160,7 @@ Based on these, recommend 3 books. For each, include:
 - author (if known)
 - reason for recommendation (based on search result info)
 
-Return as a JSON list like this:
+ONLY Return as a JSON list like this:
 [
   {{
     "title": "...",
@@ -169,6 +169,7 @@ Return as a JSON list like this:
   }},
   ...
 ]
+NO explanations before or after the JSON block.
 """
 
     response = call_llm(prompt, model="ollama/llama3", api_base="http://localhost:11434")

@@ -244,7 +244,7 @@ Based on these, recommend 3 books. For each, include:
 - author (if known)
 - reason for recommendation (based on search result info)
 
-Return as a JSON list like this:
+ONLY Return as a JSON list like this:
 [
   {{
     "title": "...",
@@ -253,6 +253,7 @@ Return as a JSON list like this:
   }},
   ...
 ]
+NO explanations before or after the JSON block.
 """
 
     response = call_llm(prompt, model="ollama/llama3", api_base="http://localhost:11434")
@@ -266,7 +267,7 @@ Return as a JSON list like this:
             "llm_prompt": prompt,
             "llm_response": response,
             "recommendations": recommendations,
-        }
+                }
 
     except Exception as e:
         logging.error(f"[recommend_similar_books] Failed to parse LLM response: {e}\nResponse was:\n{response}")

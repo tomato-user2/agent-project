@@ -1,14 +1,16 @@
-from smolagents import ToolCallingAgent, LiteLLMModel, DuckDuckGoSearchTool
+# agent.py
 from tools import extract_books, recommend_similar_books
 
-# Local Llama3 via Ollama
-model = LiteLLMModel(
-    model_id="ollama/llama3",
-    api_base="http://localhost:11434"
-)
+class SimpleBookAgent:
+    def run(self, user_input):
+        books = extract_books(user_input)
+        recommendations = recommend_similar_books(books)
 
-agent = ToolCallingAgent(
-    tools=[extract_books, recommend_similar_books],
-    model=model,
-    stream_outputs=True,   # optional real-time output
-)
+        return {
+            "search_snippets": recommendations.get("search_snippets", ""),
+            "llm_prompt": recommendations.get("llm_prompt", ""),
+            "llm_response": recommendations.get("llm_response", ""),
+            "recommendations": recommendations.get("recommendations", []),
+        }
+
+agent = SimpleBookAgent()
