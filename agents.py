@@ -1,11 +1,16 @@
-from langgraph.graph import StateGraph, END
-from search import duckduckgo_search
-import ollama
-import asyncio
+# agents.py
+import os
 import re
 import json
 import asyncio
-import ast
+from huggingface_hub import InferenceClient
+
+# Initialize HuggingFace InferenceClient with your HF API token
+HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
+if not HF_API_TOKEN:
+    raise RuntimeError("Please set the HF_API_TOKEN environment variable.")
+
+client = InferenceClient(api_key=HF_API_TOKEN)
 
 class AsyncLogger:
     def __init__(self):
@@ -27,19 +32,31 @@ class AsyncLogger:
 logger = AsyncLogger()
 
 def extract_json_array(text):
-    # Extract JSON block from anywhere in the text
+    # Extract JSON array from anywhere in the text
     pattern = r"(\[.*?\])"  # non-greedy match to get the smallest bracketed block
     matches = re.findall(pattern, text, flags=re.DOTALL)
-
     for candidate in matches:
         try:
-            # Attempt to load as JSON
             return json.loads(candidate)
-        except json.JSONDecodeError as e:
-            print(f"json.loads error: {e}")
+        except json.JSONDecodeError:
             continue
-
     return []
+
+async def hf_text_generation(prompt, model="google/flan-t5-large", max_new_tokens=256):
+    # The HuggingFace InferenceClient is synchronous, so wrap it in a thread executor for async compatibility
+    loop = asyncio.get_running_loop()
+
+    def blocking_call():
+        outputs = client.text_generation(
+            prompt,
+            model=model,
+            max_new_tokens=max_new_tokens,
+        )
+        # outputs is usually a list of dicts with 'generated_text'
+        return outputs[0]['generated_text']
+
+    result = await loop.run_in_executor(None, blocking_call)
+    return result
 
 # Node 1: Extract books from user input
 async def extract_books_node(state):
@@ -52,8 +69,7 @@ async def extract_books_node(state):
         '[{"title": "...", "author": "..."}, ...]\n\n'
         f"User input: {user_input}"
     )
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
-    content = response['message']['content']
+    content = await hf_text_generation(prompt)
 
     print("[extract_books_node] LLM raw response:", content)
     await logger.log(f"[extract_books_node] LLM response: {content}")
@@ -67,9 +83,11 @@ async def extract_books_node(state):
 
     print("[extract_books_node] Extracted books:", books)
 
-    return {"extracted_books": books}
+    return {"extracted_books": books or []}
 
-# Node 2
+# Node 2: Recommend books using DuckDuckGo search
+from search import duckduckgo_search  # keep your existing search.py
+
 async def recommend_books_node(state):
     extracted_books = state.get("extracted_books", [])
     reasoning_steps = []
@@ -91,7 +109,7 @@ async def recommend_books_node(state):
         print(f"[recommend_books_node] Searching with query: {query}")
         await logger.log(f"Searching DuckDuckGo with query: {query}")
 
-        search_results = await duckduckgo_search(query)
+        search_results = await duckduckgo_search(query, logger=logger)
 
         if not search_results:
             reasoning_steps.append(f"No results found for: {query}")
@@ -121,7 +139,7 @@ async def recommend_books_node(state):
         "reasoning": "\n".join(reasoning_steps)
     }
 
-# Node 3: Reason about the search results and generate recommendations
+# Node 3: Reason about search results and generate recommendations
 async def reasoning_node(state):
     recommendations = state.get("recommendations", [])
     initial_reasoning = state.get("reasoning", "")
@@ -130,28 +148,24 @@ async def reasoning_node(state):
         final_reasoning = initial_reasoning + "\nNo recommendations found to reason about."
         return {"final_recommendations": [], "final_reasoning": final_reasoning}
     
-    # Format recommendations as input for the LLM
     recommendations_text = "\n".join(
         [f"Title: {rec['title']}\nLink: {rec['link']}\nSnippet: {rec['snippet']}\n" for rec in recommendations]
     )
     
     prompt = (
-    "You are a helpful book recommendation expert. You are given a web search result. "
-    "Analyze it and select the most relevant book recommendations. Explain why you recommend each book. "
-    "Output only a JSON list like this:\n"
-    '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
-    "Do not add any explanations, comments, or extra text. Only output the JSON list.\n\n"
-    f"Books found from search:\n{recommendations_text}"
-)
+        "You are a helpful book recommendation expert. You are given a web search result. "
+        "Analyze it and select the most relevant book recommendations. Explain why you recommend each book. "
+        "Output only a JSON list like this:\n"
+        '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
+        "Do not add any explanations, comments, or extra text. Only output the JSON list.\n\n"
+        f"Books found from search:\n{recommendations_text}"
+    )
 
-    
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
-    content = response['message']['content']
+    content = await hf_text_generation(prompt)
 
     print("[reasoning_node] LLM raw response:", content)
     await logger.log(f"[reasoning_node] LLM response: {content}")
 
-    # Extract JSON-like structure
     final_recommendations = extract_json_array(content)
 
     if not final_recommendations:
@@ -159,7 +173,6 @@ async def reasoning_node(state):
     else:
         await logger.log(f"[reasoning_node] Final recommendations: {final_recommendations}")
 
-    # Combine previous reasoning with the final reasoning
     final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
     for rec in final_recommendations:
         final_reasoning += f"✅ Recommended: {rec.get('title', 'Unknown')} - {rec.get('reason', 'No reason provided.')}\n"
@@ -170,12 +183,14 @@ async def reasoning_node(state):
     await logger.log(f"[reasoning_node] Final reasoning:\n{final_reasoning}")
 
     return {
-        "final_recommendations": final_recommendations,
+        "final_recommendations": final_recommendations or [],
         "final_reasoning": final_reasoning
     }
 
 
-# Build the graph
+# Build the graph (import your StateGraph and END from langgraph.graph)
+from langgraph.graph import StateGraph, END
+
 def build_graph():
     graph = StateGraph(dict)
 
