@@ -1,11 +1,21 @@
 from langgraph.graph import StateGraph, END
 from search import duckduckgo_search
-import ollama
 import asyncio
 import re
 import json
 import asyncio
 import ast
+from transformers import pipeline
+import os
+import torch
+
+HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
+
+generator = pipeline("text-generation", model="tiiuae/falcon-7b-instruct", token=HF_API_TOKEN)
+
+def call_llama3(prompt):
+    output = generator(prompt, max_new_tokens=500)
+    return output[0]['generated_text']
 
 class AsyncLogger:
     def __init__(self):
@@ -52,8 +62,7 @@ async def extract_books_node(state):
         '[{"title": "...", "author": "..."}, ...]\n\n'
         f"User input: {user_input}"
     )
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
-    content = response['message']['content']
+    content = await call_llama3(prompt)
 
     print("[extract_books_node] LLM raw response:", content)
     await logger.log(f"[extract_books_node] LLM response: {content}")
@@ -145,8 +154,7 @@ async def reasoning_node(state):
 )
 
     
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
-    content = response['message']['content']
+    content = await call_llama3(prompt)
 
     print("[reasoning_node] LLM raw response:", content)
     await logger.log(f"[reasoning_node] LLM response: {content}")
