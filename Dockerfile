@@ -1,30 +1,42 @@
-FROM ollama/ollama:latest
+FROM python:3.11-slim
 
-# Install curl, Python, and pip
-RUN apt-get update && apt-get install -y curl python3 python3-pip && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install your Python dependencies
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+# Install system tools and curl
+RUN apt-get update && \
+    apt-get install -y curl bash && \
+    rm -rf /var/lib/apt/lists/*
 
-# Create ollama user and directories
+# Install Ollama
+RUN curl -fsSL https://ollama.com/install.sh | bash
+
+# Confirm installation
+RUN ollama --version
+
+# Create ollama user and home dir
 RUN useradd -m -u 1000 ollama
-RUN mkdir -p /home/ollama/.ollama && chown -R ollama:ollama /home/ollama/.ollama
 
-# Copy your app code
-COPY --chown=ollama:ollama . /home/ollama/
+# Set correct home and Ollama data directory
+ENV HOME=/home/ollama
+ENV OLLAMA_HOME=/home/ollama/.ollama
+
+# Set working directory
+WORKDIR /home/ollama/app
+
+# Copy everything as ollama user
+COPY --chown=ollama:ollama . .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Make start.sh executable
+RUN chmod +x start.sh
 
 # Switch to ollama user
 USER ollama
-WORKDIR /home/ollama
-
-# Set environment variables
-ENV OLLAMA_HOST=0.0.0.0:7860
-ENV HOME=/home/ollama
 
 # Expose ports
-EXPOSE 7860 7861  # Add another port if your app serves an API/web UI
+EXPOSE 7860 7861
 
-# Start Ollama + your app
-ENTRYPOINT []
-CMD ["/bin/bash", "/home/ollama/start.sh"]
+# Run startup script
+CMD ["bash", "./start.sh"]
