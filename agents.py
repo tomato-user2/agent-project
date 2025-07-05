@@ -13,7 +13,7 @@ from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 #    (this will download weights into the space cache)
 pipe = pipeline(
     "text-generation",
-    model="mosaicml/mpt-7b-instruct",
+    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
     trust_remote_code=True,      # only if the repo needs it
     device=-1                    # use CPU; set device=0 if you have GPU
 )
@@ -106,7 +106,7 @@ async def extract_books_node(state):
         f"User input: {user_input}"
     )
     response = await chat(
-        model="mosaicml/mpt-7b-instruct",
+        model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         messages=[{"role":"user","content": prompt}]
     )
     content = response["message"]["content"]
@@ -202,7 +202,7 @@ async def reasoning_node(state):
 
     
     response = await chat(
-        model="mosaicml/mpt-7b-instruct",
+        model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         messages=[{"role":"user","content": prompt}]
     )
     
