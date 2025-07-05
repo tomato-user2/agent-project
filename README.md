@@ -1,15 +1,25 @@
 ---
-title: BookRecommender
-emoji: 🌖
-colorFrom: pink
-colorTo: pink
-sdk: gradio
-sdk_version: 5.29.1
-app_file: app.py
-pinned: false
-license: apache-2.0
+title: Ollama Chat API
+emoji: 🤖
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
 ---
 
-A simple book recommendation agent.
-Utilises ollama/llama3 and web search via DuckDuckGo.
-Usage is pretty self explanatory.
+# Ollama Chat API
+
+This space runs Ollama with llama3.2:1b and mxbai-embed-large models for chat and embeddings.
+
+## API Endpoints
+
+- `GET /api/tags` - List available models
+- `POST /api/generate` - Generate text
+- `POST /api/embeddings` - Generate embeddings
+
+## Models Available
+
+- `llama3.2:1b` - Chat model
+- `mxbai-embed-large` - Embedding model
+
+The API is compatible with Ollama's standard API format.

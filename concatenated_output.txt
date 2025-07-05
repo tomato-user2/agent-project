@@ -1,3 +1,46 @@
+# .gitattributes
+*.7z filter=lfs diff=lfs merge=lfs -text
+*.arrow filter=lfs diff=lfs merge=lfs -text
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.bz2 filter=lfs diff=lfs merge=lfs -text
+*.ckpt filter=lfs diff=lfs merge=lfs -text
+*.ftz filter=lfs diff=lfs merge=lfs -text
+*.gz filter=lfs diff=lfs merge=lfs -text
+*.h5 filter=lfs diff=lfs merge=lfs -text
+*.joblib filter=lfs diff=lfs merge=lfs -text
+*.lfs.* filter=lfs diff=lfs merge=lfs -text
+*.mlmodel filter=lfs diff=lfs merge=lfs -text
+*.model filter=lfs diff=lfs merge=lfs -text
+*.msgpack filter=lfs diff=lfs merge=lfs -text
+*.npy filter=lfs diff=lfs merge=lfs -text
+*.npz filter=lfs diff=lfs merge=lfs -text
+*.onnx filter=lfs diff=lfs merge=lfs -text
+*.ot filter=lfs diff=lfs merge=lfs -text
+*.parquet filter=lfs diff=lfs merge=lfs -text
+*.pb filter=lfs diff=lfs merge=lfs -text
+*.pickle filter=lfs diff=lfs merge=lfs -text
+*.pkl filter=lfs diff=lfs merge=lfs -text
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.pth filter=lfs diff=lfs merge=lfs -text
+*.rar filter=lfs diff=lfs merge=lfs -text
+*.safetensors filter=lfs diff=lfs merge=lfs -text
+saved_model/**/* filter=lfs diff=lfs merge=lfs -text
+*.tar.* filter=lfs diff=lfs merge=lfs -text
+*.tar filter=lfs diff=lfs merge=lfs -text
+*.tflite filter=lfs diff=lfs merge=lfs -text
+*.tgz filter=lfs diff=lfs merge=lfs -text
+*.wasm filter=lfs diff=lfs merge=lfs -text
+*.xz filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+*.zst filter=lfs diff=lfs merge=lfs -text
+*tfevents* filter=lfs diff=lfs merge=lfs -text
+
+----------------------------------------
+
+# .gitignore
+_pycache_/
+----------------------------------------
+
 # agents.py
 from langgraph.graph import StateGraph, END
 from search import duckduckgo_search
@@ -28,22 +71,18 @@ class AsyncLogger:
 logger = AsyncLogger()
 
 def extract_json_array(text):
-    # Try to extract the list from the entire text by searching for a list literal
-    pattern = r"(\[.*\])"
+    # Extract JSON block from anywhere in the text
+    pattern = r"(\[.*?\])"  # non-greedy match to get the smallest bracketed block
     matches = re.findall(pattern, text, flags=re.DOTALL)
-    if not matches:
-        return []
 
     for candidate in matches:
         try:
-            # Safely evaluate the python-like list/dict string
-            data = ast.literal_eval(candidate)
-            # Convert to JSON string and parse to verify
-            json_str = json.dumps(data)
-            return json.loads(json_str)
-        except Exception as e:
-            print(f"ast.literal_eval/json error: {e}")
+            # Attempt to load as JSON
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            print(f"json.loads error: {e}")
             continue
+
     return []
 
 # Node 1: Extract books from user input
@@ -57,7 +96,7 @@ async def extract_books_node(state):
         '[{"title": "...", "author": "..."}, ...]\n\n'
         f"User input: {user_input}"
     )
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
+    response = ollama.chat(model="llama3.2:1b", messages=[{"role": "user", "content": prompt}])
     content = response['message']['content']
 
     print("[extract_books_node] LLM raw response:", content)
@@ -150,7 +189,7 @@ async def reasoning_node(state):
 )
 
     
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
+    response = ollama.chat(model="llama3.2:1b", messages=[{"role": "user", "content": prompt}])
     content = response['message']['content']
 
     print("[reasoning_node] LLM raw response:", content)
@@ -211,10 +250,12 @@ async def run_book_recommender(user_input):
     async for state in graph.astream(initial_state):
         final_state = state
 
-    # NEW: Get the final output fields
     print("[app.py] Final state:", final_state)
-    recommendations = final_state.get("final_recommendations", [])
-    reasoning = final_state.get("final_reasoning", "")
+
+    # Access the nested "reasoning" key
+    reasoning_data = final_state.get("reasoning", {})
+    recommendations = reasoning_data.get("final_recommendations", [])
+    reasoning = reasoning_data.get("final_reasoning", "")
 
     recommendations_text = "\n\n".join(
         [f"📘 {rec['title']}\n🔗 {rec.get('link', '')}\n💡 {rec.get('reason', '')}" for rec in recommendations]
@@ -237,30 +278,97 @@ if __name__ == "__main__":
 
 ----------------------------------------
 
-# concatenate_py_files.py
+# concatenate_all_files.py
 import os
 
-def concatenate_py_files(output_file):
+def concatenate_all_files(output_file):
     # Get the current directory
     current_directory = os.getcwd()
     
-    # List all .py files in the current directory
-    py_files = [f for f in os.listdir(current_directory) if f.endswith('.py')]
+    # List all files in the current directory
+    all_files = [f for f in os.listdir(current_directory) if os.path.isfile(f)]
     
     with open(output_file, 'w', encoding='utf-8') as outfile:
-        for py_file in py_files:
+        for file in all_files:
             # Write the file name as a header
-            outfile.write(f"# {py_file}\n")
+            outfile.write(f"# {file}\n")
             # Write the content of the file
-            with open(py_file, 'r', encoding='utf-8') as infile:
+            with open(file, 'r', encoding='utf-8') as infile:
                 outfile.write(infile.read())
             # Add a separator line
             outfile.write("\n" + "-"*40 + "\n\n")
 
 if __name__ == "__main__":
     output_file_name = "concatenated_output.txt"
-    concatenate_py_files(output_file_name)
-    print(f"All .py files have been concatenated into {output_file_name}.")
+    concatenate_all_files(output_file_name)
+    print(f"All files have been concatenated into {output_file_name}.")
+
+----------------------------------------
+
+# Dockerfile
+FROM ollama/ollama:latest
+
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Create ollama user and directories
+RUN useradd -m -u 1000 ollama
+RUN mkdir -p /home/ollama/.ollama && chown -R ollama:ollama /home/ollama/.ollama
+
+# Copy startup script
+COPY --chown=ollama:ollama start.sh /home/ollama/start.sh
+RUN chmod +x /home/ollama/start.sh
+
+# Switch to ollama user
+USER ollama
+WORKDIR /home/ollama
+
+# Set environment variables
+ENV OLLAMA_HOST=0.0.0.0:7860
+ENV HOME=/home/ollama
+
+# Expose port
+EXPOSE 7860
+
+# Override entrypoint and run script
+ENTRYPOINT []
+CMD ["/bin/bash", "/home/ollama/start.sh"]
+----------------------------------------
+
+# README.md
+---
+title: Ollama Chat API
+emoji: 🤖
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+---
+
+# Ollama Chat API
+
+This space runs Ollama with llama3.2:1b and mxbai-embed-large models for chat and embeddings.
+
+## API Endpoints
+
+- `GET /api/tags` - List available models
+- `POST /api/generate` - Generate text
+- `POST /api/embeddings` - Generate embeddings
+
+## Models Available
+
+- `llama3.2:1b` - Chat model
+- `mxbai-embed-large` - Embedding model
+
+The API is compatible with Ollama's standard API format.
+----------------------------------------
+
+# requirements.txt
+langgraph
+ollama
+gradio
+httpx
+selectolax
 
 ----------------------------------------
 
@@ -301,5 +409,46 @@ async def duckduckgo_search(query, max_results=5, logger=None):
 
     return results
 
+----------------------------------------
+
+# start.sh
+#!/bin/bash
+# start.sh for Hugging Face Spaces
+
+echo "Starting Ollama server..."
+
+# Start Ollama server in background with explicit host:port
+OLLAMA_HOST=0.0.0.0:7860 ollama serve &
+
+# Wait for server to start
+echo "Waiting for Ollama server to start..."
+sleep 15
+
+# Function to check if Ollama is ready
+wait_for_ollama() {
+    while ! curl -s http://localhost:7860/api/tags > /dev/null; do
+        echo "Waiting for Ollama to be ready..."
+        sleep 5
+    done
+    echo "Ollama is ready!"
+}
+
+wait_for_ollama
+
+# Pull required models
+echo "Pulling llama3.2:1b model..."
+ollama pull llama3.2:1b
+
+echo "Pulling mxbai-embed-large model..."
+ollama pull mxbai-embed-large
+
+echo "All models pulled successfully!"
+echo "Ollama is running on http://0.0.0.0:7860"
+
+echo "Starting Gradio app..."
+python3 app.py
+
+# Keep container running and show logs
+tail -f /dev/null
 ----------------------------------------
 

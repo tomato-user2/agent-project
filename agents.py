@@ -52,7 +52,7 @@ async def extract_books_node(state):
         '[{"title": "...", "author": "..."}, ...]\n\n'
         f"User input: {user_input}"
     )
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
+    response = ollama.chat(model="llama3.2:1b", messages=[{"role": "user", "content": prompt}])
     content = response['message']['content']
 
     print("[extract_books_node] LLM raw response:", content)
@@ -145,7 +145,7 @@ async def reasoning_node(state):
 )
 
     
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
+    response = ollama.chat(model="llama3.2:1b", messages=[{"role": "user", "content": prompt}])
     content = response['message']['content']
 
     print("[reasoning_node] LLM raw response:", content)

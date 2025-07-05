@@ -1,23 +1,23 @@
 import os
 
-def concatenate_py_files(output_file):
+def concatenate_all_files(output_file):
     # Get the current directory
     current_directory = os.getcwd()
     
-    # List all .py files in the current directory
-    py_files = [f for f in os.listdir(current_directory) if f.endswith('.py')]
+    # List all files in the current directory
+    all_files = [f for f in os.listdir(current_directory) if os.path.isfile(f)]
     
     with open(output_file, 'w', encoding='utf-8') as outfile:
-        for py_file in py_files:
+        for file in all_files:
             # Write the file name as a header
-            outfile.write(f"# {py_file}\n")
+            outfile.write(f"# {file}\n")
             # Write the content of the file
-            with open(py_file, 'r', encoding='utf-8') as infile:
+            with open(file, 'r', encoding='utf-8') as infile:
                 outfile.write(infile.read())
             # Add a separator line
             outfile.write("\n" + "-"*40 + "\n\n")
 
 if __name__ == "__main__":
     output_file_name = "concatenated_output.txt"
-    concatenate_py_files(output_file_name)
-    print(f"All .py files have been concatenated into {output_file_name}.")
+    concatenate_all_files(output_file_name)
+    print(f"All files have been concatenated into {output_file_name}.")
