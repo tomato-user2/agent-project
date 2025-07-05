@@ -1,10 +1,11 @@
 import gradio as gr
 from agents import build_graph
+import json
+from pprint import pformat
 
 graph = build_graph()
 
 async def run_book_recommender(user_input):
-    # 1) Kick off the state‐graph via .astream
     initial_state = {"user_input": user_input}
     final_state = None
 
@@ -12,30 +13,40 @@ async def run_book_recommender(user_input):
         async for state in graph.astream(initial_state):
             final_state = state
     except Exception as e:
-        # Log it somewhere if you want
         print("🔥 Exception while streaming graph:", e)
-        # And then re-raise so Gradio can show it
         raise
 
-    # 2) If for some bizarre reason the graph yielded zero times,
-    #    fall back to a safe default
     if final_state is None:
         final_state = {
             "final_recommendations": [],
             "final_reasoning": "⚠️ Graph never yielded a final state."
         }
 
-    # 3) Extract the real outputs
-    recs = final_state.get("final_recommendations", [])
-    reasoning = final_state.get("final_reasoning", "")
+    reasoning_data = final_state.get("reasoning", {})
+    recs = reasoning_data.get("final_recommendations", [])
+    reasoning = reasoning_data.get("final_reasoning", "")
 
-    # 4) Format them
-    recs_text = "\n\n".join(
-        f"📘 {r['title']}\n🔗 {r.get('link','')}\n💡 {r.get('reason','')}"
-        for r in recs
-    ) or "No recommendations found."
+    # Defensive formatting of recommendations
+    try:
+        if isinstance(recs, list) and all(isinstance(r, dict) for r in recs):
+            # Format nicely as before
+            recs_text = "\n\n".join(
+                f"📘 {r.get('title', 'Unknown Title')}\n🔗 {r.get('link','')}\n💡 {r.get('reason','')}"
+                for r in recs
+            )
+            if not recs_text.strip():
+                recs_text = "No recommendations found."
+        else:
+            # For any other structure, try pretty-printing JSON or just string conversion
+            try:
+                recs_text = json.dumps(recs, indent=2, ensure_ascii=False)
+            except Exception:
+                recs_text = pformat(recs)
+            if not recs_text.strip():
+                recs_text = "No recommendations found."
+    except Exception as e:
+        recs_text = f"Error formatting recommendations: {e}"
 
-    # 5) **Explicitly return** in all cases
     return recs_text, reasoning
 
 with gr.Blocks() as demo:

@@ -7,6 +7,7 @@ import asyncio
 import httpx
 import os
 import ast
+import traceback
 from huggingface_hub import InferenceClient
 
 # Create a single shared client
@@ -84,7 +85,6 @@ def extract_json_array(text: str):
 async def extract_books_node(state):
     try:
         print("[extract_books_node] 👉 enter")
-        # await logger.clear()
         user_input = state.get("user_input", "")
         prompt = (
             "Extract all book titles and authors from the user input. Do not add books on your own, just take the user input."
@@ -94,28 +94,43 @@ async def extract_books_node(state):
             "Do not add any explanations, prefixes, or markdown. Just the JSON list.\n\n"
             f"User input: {user_input}"
         )
+        print("[extract_books_node] Prompt sent to LLM:\n", prompt)
+
         response = await chat(
             model="mistralai/Mistral-7B-Instruct-v0.2",
             messages=[{"role":"user","content": prompt}]
         )
         content = response["message"]["content"]
 
-        print("[extract_books_node] LLM raw response:", content)
-        # await logger.log(f"[extract_books_node] LLM response: {content}")
+        print("[extract_books_node] Raw LLM response:\n", repr(content))
+        print(f"[extract_books_node] Response type: {type(content)}, length: {len(content)}")
 
+        # Remove code blocks or markdown again here just to be sure
+        cleaned_content = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", content, flags=re.IGNORECASE).strip()
+        print("[extract_books_node] Cleaned response:\n", repr(cleaned_content))
+
+        books = []
         try:
-            books = extract_json_array(content)
-        except StopIteration:
-            print("extract_json_array caused StopIteration — try to consume it as list")
-            books = list(extract_json_array(content))
+            books = json.loads(cleaned_content)
+            print("[extract_books_node] JSON parsed successfully.")
+        except json.JSONDecodeError as e:
+            print(f"[extract_books_node] JSONDecodeError: {e}")
+            print("[extract_books_node] Attempting fallback parsing with ast.literal_eval.")
+            try:
+                books = ast.literal_eval(cleaned_content)
+                print("[extract_books_node] Fallback parsing successful.")
+            except Exception as e2:
+                print(f"[extract_books_node] Fallback parsing failed: {e2}")
+                print("[extract_books_node] Traceback:\n", traceback.format_exc())
 
         print("[extract_books_node] Extracted books:", books)
-        print("[extract_books_node] 👈 exit with", {"extracted_books": books})   # <-- Fixed
+        print("[extract_books_node] 👈 exit with", {"extracted_books": books})
         return {"extracted_books": books}
 
     except Exception as e:
-            print("[extract_books_node] ❌ exception:", repr(e))
-            raise
+        print("[extract_books_node] ❌ exception:", repr(e))
+        print("[extract_books_node] Traceback:\n", traceback.format_exc())
+        raise
 
 # Node 2
 async def recommend_books_node(state):
@@ -174,56 +189,79 @@ async def recommend_books_node(state):
         raise
 
 # Node 3: Reason about the search results and generate recommendations
+
 async def reasoning_node(state):
-    recommendations = state.get("recommendations", [])
-    initial_reasoning = state.get("reasoning", "")
-    
-    if not recommendations:
-        final_reasoning = initial_reasoning + "\nNo recommendations found to reason about."
-        return {"final_recommendations": [], "final_reasoning": final_reasoning}
-    
-    # Format recommendations as input for the LLM
-    recommendations_text = "\n".join(
-        [f"Title: {rec['title']}\nLink: {rec['link']}\nSnippet: {rec['snippet']}\n" for rec in recommendations]
-    )
-    
-    prompt = (
-    "You are a helpful book recommendation expert. You are given a web search result. "
-    "Analyze it and select the most relevant book recommendations. Explain why you recommend each book. "
-    "Output only a JSON list like this:\n"
-    '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
-    "Do not add any explanations, comments, or extra text. Only output the JSON list.\n\n"
-    f"Books found from search:\n{recommendations_text}"
-)
+    try:
+        recommendations = state.get("recommendations", [])
+        initial_reasoning = state.get("reasoning", "")
 
-    
-    response = await chat(
-        model="mistralai/Mistral-7B-Instruct-v0.2",
-        messages=[{"role":"user","content": prompt}]
-    )
-    
-    content = response['message']['content']
+        if not recommendations:
+            final_reasoning = initial_reasoning + "\nNo recommendations found to reason about."
+            print("[reasoning_node] No recommendations to process.")
+            return {"final_recommendations": [], "final_reasoning": final_reasoning}
 
-    print("[reasoning_node] LLM raw response:", content)
-    # await logger.log(f"[reasoning_node] LLM response: {content}")
+        # Format recommendations as input for the LLM
+        recommendations_text = "\n".join(
+            [f"Title: {rec['title']}\nLink: {rec['link']}\nSnippet: {rec['snippet']}\n" for rec in recommendations]
+        )
 
-    # Extract JSON-like structure
-    final_recommendations = extract_json_array(content)
+        prompt = (
+            "You are a helpful book recommendation expert. You are given a web search result. "
+            "Analyze it and select the most relevant book recommendations. Explain why you recommend each book. "
+            "Output only a JSON list like this:\n"
+            '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
+            "Do not add any explanations, comments, or extra text. Only output the JSON list.\n\n"
+            f"Books found from search:\n{recommendations_text}"
+        )
 
-    # Combine previous reasoning with the final reasoning
-    final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
-    for rec in final_recommendations:
-        final_reasoning += f"✅ Recommended: {rec.get('title', 'Unknown')} - {rec.get('reason', 'No reason provided.')}\n"
+        print("[reasoning_node] Prompt sent to LLM:\n", prompt)
 
-    print("[reasoning_node] Final recommendations extracted:", final_recommendations)
-    print("[reasoning_node] Final reasoning:\n", final_reasoning)
-    # await logger.log(f"[reasoning_node] Final recommendations extracted: {final_recommendations}")
-    # await logger.log(f"[reasoning_node] Final reasoning:\n{final_reasoning}")
+        response = await chat(
+            model="mistralai/Mistral-7B-Instruct-v0.2",
+            messages=[{"role":"user","content": prompt}]
+        )
 
-    return {
-        "final_recommendations": final_recommendations,
-        "final_reasoning": final_reasoning
-    }
+        content = response['message']['content']
+
+        print("[reasoning_node] Raw LLM response:\n", repr(content))
+        print(f"[reasoning_node] Response type: {type(content)}, length: {len(content)}")
+
+        # Clean the content from code blocks, markdown, etc.
+        cleaned_content = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", content, flags=re.IGNORECASE).strip()
+        print("[reasoning_node] Cleaned response:\n", repr(cleaned_content))
+
+        final_recommendations = []
+        try:
+            final_recommendations = json.loads(cleaned_content)
+            print("[reasoning_node] JSON parsed successfully.")
+        except json.JSONDecodeError as e:
+            print(f"[reasoning_node] JSONDecodeError: {e}")
+            print("[reasoning_node] Attempting fallback parsing with ast.literal_eval.")
+            try:
+                final_recommendations = ast.literal_eval(cleaned_content)
+                print("[reasoning_node] Fallback parsing successful.")
+            except Exception as e2:
+                print(f"[reasoning_node] Fallback parsing failed: {e2}")
+                print("[reasoning_node] Traceback:\n", traceback.format_exc())
+
+        # Compose final reasoning combining initial and LLM results
+        final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
+        for rec in final_recommendations:
+            final_reasoning += f"✅ Recommended: {rec.get('title', 'Unknown')} - {rec.get('reason', 'No reason provided.')}\n"
+
+        print("[reasoning_node] Final recommendations extracted:", final_recommendations)
+        print("[reasoning_node] Final reasoning:\n", final_reasoning)
+
+        return {
+            "final_recommendations": final_recommendations,
+            "final_reasoning": final_reasoning
+        }
+
+    except Exception as e:
+        print("[reasoning_node] ❌ exception:", repr(e))
+        print("[reasoning_node] Traceback:\n", traceback.format_exc())
+        raise
+
 
 
 # Build the graph
