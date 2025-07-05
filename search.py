@@ -3,9 +3,6 @@ import httpx
 from selectolax.parser import HTMLParser
 
 async def duckduckgo_search(query, max_results=5, logger=None):
-    if logger:
-        await logger.log(f"[duckduckgo_search] Searching for query: {query}")
-
     url = f"https://html.duckduckgo.com/html/?q={query}"
     headers = {"User-Agent": "Mozilla/5.0"}
     async with httpx.AsyncClient() as client:
@@ -23,13 +20,5 @@ async def duckduckgo_search(query, max_results=5, logger=None):
             link = title_el.attributes.get("href", "")
             snippet = snippet_el.text(strip=True)
             results.append({"title": title, "link": link, "snippet": snippet})
-            if logger:
-                await logger.log(f"[duckduckgo_search] Found result: {title} - {link}")
-        else:
-            if logger:
-                await logger.log("[duckduckgo_search] Skipped a result due to missing title or snippet.")
-
-    if logger:
-        await logger.log(f"[duckduckgo_search] Total results found: {len(results)}")
 
     return results

@@ -7,48 +7,35 @@ import asyncio
 import httpx
 import os
 import ast
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from huggingface_hub import InferenceClient
 
-# 1) At module load time, build a single pipeline
-#    (this will download weights into the space cache)
-pipe = pipeline(
-    "text-generation",
-    model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    trust_remote_code=True,      # only if the repo needs it
-    device=-1                    # use CPU; set device=0 if you have GPU
-)
+# Create a single shared client
+# It will read your HUGGINGFACEHUB_API_TOKEN from the env for authentication
+client = InferenceClient(token=os.getenv("HF_API_TOKEN"))
 
-async def local_chat(model: str, messages: list[dict]):
-    """
-    Wrap the blocking `pipe(...)` call in an executor
-    so our async graph code can await it.
-    """
-    # We’ll ignore `model` since pipe is already pegged
-    prompt = "".join(
-        f"{m['role'].upper()}: {m['content']}\n"
-        for m in messages
-    )
-
+async def hf_chat(model: str, messages: list[dict]):
     loop = asyncio.get_running_loop()
-    # run the pipeline in a thread pool
-    generated = await loop.run_in_executor(
-        None,
-        lambda: pipe(prompt, max_new_tokens=512, temperature=0.7)
-    )
-    # pipe returns a list of dicts: [{"generated_text": "..."}]
-    text = generated[0]["generated_text"]
 
-    # return the same shape as your old ollama.chat
-    return {"message": {"role": "assistant", "content": text}}
+    def _sync_call():
+        # Ensure you have initialized the client with your HF_API_TOKEN
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            # you can pass generation params here too
+            # temperature=0.7, max_tokens=512, ...
+        )
 
+    completion = await loop.run_in_executor(None, _sync_call)
 
-# Alias so your existing nodes can just call `await chat(...)`
-chat = local_chat
+    return {
+        "message": {
+            "role": completion.choices[0].message.role,
+            "content": completion.choices[0].message.content
+        }
+    }
 
-
-# ---------------------------------------------------
-# Now your nodes stay the same except they `await chat(...)`
-# ---------------------------------------------------
+# Alias `chat` to your HF-backed version
+chat = hf_chat
 
 class AsyncLogger:
     def __init__(self):
@@ -95,87 +82,96 @@ def extract_json_array(text: str):
 
 # Node 1: Extract books from user input
 async def extract_books_node(state):
-    await logger.clear()
-    user_input = state.get("user_input", "")
-    prompt = (
-        "Extract all book titles and authors from the user input. Do not add books on your own, just take the user input."
-        "If a book is mentioned but the author is missing, fill it in using your knowledge. "
-        "ONLY output a JSON list of dicts, like this:\n"
-        '[{"title": "...", "author": "..."}, ...]\n'
-        "Do not add any explanations, prefixes, or markdown. Just the JSON list.\n\n"
-        f"User input: {user_input}"
-    )
-    response = await chat(
-        model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
-        messages=[{"role":"user","content": prompt}]
-    )
-    content = response["message"]["content"]
+    try:
+        print("[extract_books_node] 👉 enter")
+        # await logger.clear()
+        user_input = state.get("user_input", "")
+        prompt = (
+            "Extract all book titles and authors from the user input. Do not add books on your own, just take the user input."
+            "If a book is mentioned but the author is missing, fill it in using your knowledge. "
+            "ONLY output a JSON list of dicts, like this:\n"
+            '[{"title": "...", "author": "..."}, ...]\n'
+            "Do not add any explanations, prefixes, or markdown. Just the JSON list.\n\n"
+            f"User input: {user_input}"
+        )
+        response = await chat(
+            model="mistralai/Mistral-7B-Instruct-v0.2",
+            messages=[{"role":"user","content": prompt}]
+        )
+        content = response["message"]["content"]
 
-    print("[extract_books_node] LLM raw response:", content)
-    await logger.log(f"[extract_books_node] LLM response: {content}")
+        print("[extract_books_node] LLM raw response:", content)
+        # await logger.log(f"[extract_books_node] LLM response: {content}")
 
-    books = extract_json_array(content)
+        try:
+            books = extract_json_array(content)
+        except StopIteration:
+            print("extract_json_array caused StopIteration — try to consume it as list")
+            books = list(extract_json_array(content))
 
-    if not books:
-        await logger.log("[extract_books_node] Failed to extract valid book list from LLM response.")
-    else:
-        await logger.log(f"[extract_books_node] Extracted books: {books}")
+        print("[extract_books_node] Extracted books:", books)
+        print("[extract_books_node] 👈 exit with", {"extracted_books": books})   # <-- Fixed
+        return {"extracted_books": books}
 
-    print("[extract_books_node] Extracted books:", books)
-
-    return {"extracted_books": books}
+    except Exception as e:
+            print("[extract_books_node] ❌ exception:", repr(e))
+            raise
 
 # Node 2
 async def recommend_books_node(state):
-    extracted_books = state.get("extracted_books", [])
-    reasoning_steps = []
-    recommended_books = []
+    try:
+        print("[recommend_books_node] 👉 enter")
+        extracted_books = state.get("extracted_books", [])
+        reasoning_steps = []
+        recommended_books = []
 
-    print("[recommend_books_node] Extracted books:", extracted_books)
-    await logger.log(f"[recommend_books_node] Extracted books: {extracted_books}")
+        print("[recommend_books_node] Extracted books:", extracted_books)
+        # await logger.log(f"[recommend_books_node] Extracted books: {extracted_books}")
 
-    if not extracted_books:
-        reasoning_steps.append("No books extracted from the input. Check if the extraction failed.")
-        return {"recommendations": [], "reasoning": "\n".join(reasoning_steps)}
+        if not extracted_books:
+            reasoning_steps.append("No books extracted from the input. Check if the extraction failed.")
+            return {"recommendations": [], "reasoning": "\n".join(reasoning_steps)}
 
-    for book in extracted_books:
-        title = book.get("title", "")
-        author = book.get("author", "")
-        query = f"Books similar to '{title}' by {author}"
-        reasoning_steps.append(f"Searching DuckDuckGo with query: {query}")
+        for book in extracted_books:
+            title = book.get("title", "")
+            author = book.get("author", "")
+            query = f"Books similar to '{title}' by {author}"
+            reasoning_steps.append(f"Searching DuckDuckGo with query: {query}")
 
-        print(f"[recommend_books_node] Searching with query: {query}")
-        await logger.log(f"Searching DuckDuckGo with query: {query}")
+            print(f"[recommend_books_node] Searching with query: {query}")
+            # await logger.log(f"Searching DuckDuckGo with query: {query}")
 
-        search_results = await duckduckgo_search(query)
+            search_results = await duckduckgo_search(query)
 
-        if not search_results:
-            reasoning_steps.append(f"No results found for: {query}")
-            print(f"[recommend_books_node] No results found for query: {query}")
-            await logger.log(f"No results found for query: {query}")
-            continue
+            if not search_results:
+                reasoning_steps.append(f"No results found for: {query}")
+                print(f"[recommend_books_node] No results found for query: {query}")
+                # await logger.log(f"No results found for query: {query}")
+                continue
 
-        print(f"[recommend_books_node] Results for query '{query}': {search_results}")
-        await logger.log(f"Results for query '{query}': {search_results}")
+            print(f"[recommend_books_node] Results for query '{query}': {search_results}")
 
-        for res in search_results:
-            recommended_books.append({
-                "title": res.get("title", "No Title"),
-                "link": res.get("link", ""),
-                "snippet": res.get("snippet", "")
-            })
-            reasoning_steps.append(f"✅ Found: {res.get('title', 'No Title')} ({res.get('link', '')})")
+            for res in search_results:
+                recommended_books.append({
+                    "title": res.get("title", "No Title"),
+                    "link": res.get("link", ""),
+                    "snippet": res.get("snippet", "")
+                })
+                reasoning_steps.append(f"✅ Found: {res.get('title', 'No Title')} ({res.get('link', '')})")
 
-    if not recommended_books:
-        reasoning_steps.append("No recommendations found across all queries.")
+        if not recommended_books:
+            reasoning_steps.append("No recommendations found across all queries.")
 
-    print("[recommend_books_node] Final recommendations:", recommended_books)
-    await logger.log(f"Final recommendations: {recommended_books}")
-
-    return {
-        "recommendations": recommended_books,
-        "reasoning": "\n".join(reasoning_steps)
-    }
+        print("[recommend_books_node] Final recommendations:", recommended_books)
+        print("[recommend_books_node] 👈 exit with", {"recommendations": recommended_books, "reasoning": "\n".join(reasoning_steps)})
+        return {
+            "recommendations": recommended_books,
+            "reasoning": "\n".join(reasoning_steps)
+        }
+    
+    except Exception as e:
+        print("[extract_books_node] ❌ exception:", repr(e))
+        raise
 
 # Node 3: Reason about the search results and generate recommendations
 async def reasoning_node(state):
@@ -202,22 +198,17 @@ async def reasoning_node(state):
 
     
     response = await chat(
-        model="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        model="mistralai/Mistral-7B-Instruct-v0.2",
         messages=[{"role":"user","content": prompt}]
     )
     
     content = response['message']['content']
 
     print("[reasoning_node] LLM raw response:", content)
-    await logger.log(f"[reasoning_node] LLM response: {content}")
+    # await logger.log(f"[reasoning_node] LLM response: {content}")
 
     # Extract JSON-like structure
     final_recommendations = extract_json_array(content)
-
-    if not final_recommendations:
-        await logger.log("[reasoning_node] Failed to extract final recommendations from LLM response.")
-    else:
-        await logger.log(f"[reasoning_node] Final recommendations: {final_recommendations}")
 
     # Combine previous reasoning with the final reasoning
     final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
@@ -226,8 +217,8 @@ async def reasoning_node(state):
 
     print("[reasoning_node] Final recommendations extracted:", final_recommendations)
     print("[reasoning_node] Final reasoning:\n", final_reasoning)
-    await logger.log(f"[reasoning_node] Final recommendations extracted: {final_recommendations}")
-    await logger.log(f"[reasoning_node] Final reasoning:\n{final_reasoning}")
+    # await logger.log(f"[reasoning_node] Final recommendations extracted: {final_recommendations}")
+    # await logger.log(f"[reasoning_node] Final reasoning:\n{final_reasoning}")
 
     return {
         "final_recommendations": final_recommendations,
