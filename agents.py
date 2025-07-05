@@ -6,13 +6,14 @@ import json
 import asyncio
 import httpx
 import os
+import ast
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 
 # 1) At module load time, build a single pipeline
 #    (this will download weights into the space cache)
 pipe = pipeline(
     "text-generation",
-    model="tiiuae/falcon-7b-instruct",
+    model="mosaicml/mpt-7b-instruct",
     trust_remote_code=True,      # only if the repo needs it
     device=-1                    # use CPU; set device=0 if you have GPU
 )
@@ -68,34 +69,44 @@ class AsyncLogger:
 
 logger = AsyncLogger()
 
-def extract_json_array(text):
-    # Extract JSON block from anywhere in the text
-    pattern = r"(\[.*?\])"  # non-greedy match to get the smallest bracketed block
-    matches = re.findall(pattern, text, flags=re.DOTALL)
+def extract_json_array(text: str):
+    # Remove Markdown/HTML formatting
+    text = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", text, flags=re.IGNORECASE)
 
-    for candidate in matches:
+    # Extract the first [...] block
+    match = re.search(r"(\[\s*{.*?}\s*\])", text, re.DOTALL)
+    if not match:
+        return []
+    
+    json_str = match.group(1)
+
+    # Try parsing as JSON
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print("[extract_json_array] JSON decode error:", e)
+
+        # Fallback: try ast.literal_eval
         try:
-            # Attempt to load as JSON
-            return json.loads(candidate)
-        except json.JSONDecodeError as e:
-            print(f"json.loads error: {e}")
-            continue
-
-    return []
+            return ast.literal_eval(json_str)
+        except Exception as e2:
+            print("[extract_json_array] literal_eval failed:", e2)
+            return []
 
 # Node 1: Extract books from user input
 async def extract_books_node(state):
     await logger.clear()
     user_input = state.get("user_input", "")
     prompt = (
-        "Extract all book titles and authors from the following text. "
-        "If an author is missing, fill it in using your knowledge. "
-        "Output only a JSON list of dicts like this:\n"
-        '[{"title": "...", "author": "..."}, ...]\n\n'
+        "Extract all book titles and authors from the user input. Do not add books on your own, just take the user input."
+        "If a book is mentioned but the author is missing, fill it in using your knowledge. "
+        "ONLY output a JSON list of dicts, like this:\n"
+        '[{"title": "...", "author": "..."}, ...]\n'
+        "Do not add any explanations, prefixes, or markdown. Just the JSON list.\n\n"
         f"User input: {user_input}"
     )
     response = await chat(
-        model="tiiuae/falcon-7b-instruct",
+        model="mosaicml/mpt-7b-instruct",
         messages=[{"role":"user","content": prompt}]
     )
     content = response["message"]["content"]
@@ -191,7 +202,7 @@ async def reasoning_node(state):
 
     
     response = await chat(
-        model="tiiuae/falcon-7b-instruct",
+        model="mosaicml/mpt-7b-instruct",
         messages=[{"role":"user","content": prompt}]
     )
     
