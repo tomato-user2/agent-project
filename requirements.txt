@@ -3,3 +3,6 @@ ollama
 gradio
 httpx
 selectolax
+huggingface_hub
+transformers
+torch

@@ -1,11 +1,53 @@
 from langgraph.graph import StateGraph, END
 from search import duckduckgo_search
-import ollama
 import asyncio
 import re
 import json
 import asyncio
-import ast
+import httpx
+import os
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+
+# 1) At module load time, build a single pipeline
+#    (this will download weights into the space cache)
+pipe = pipeline(
+    "text-generation",
+    model="tiiuae/falcon-7b-instruct",
+    trust_remote_code=True,      # only if the repo needs it
+    device=-1                    # use CPU; set device=0 if you have GPU
+)
+
+async def local_chat(model: str, messages: list[dict]):
+    """
+    Wrap the blocking `pipe(...)` call in an executor
+    so our async graph code can await it.
+    """
+    # We’ll ignore `model` since pipe is already pegged
+    prompt = "".join(
+        f"{m['role'].upper()}: {m['content']}\n"
+        for m in messages
+    )
+
+    loop = asyncio.get_running_loop()
+    # run the pipeline in a thread pool
+    generated = await loop.run_in_executor(
+        None,
+        lambda: pipe(prompt, max_new_tokens=512, temperature=0.7)
+    )
+    # pipe returns a list of dicts: [{"generated_text": "..."}]
+    text = generated[0]["generated_text"]
+
+    # return the same shape as your old ollama.chat
+    return {"message": {"role": "assistant", "content": text}}
+
+
+# Alias so your existing nodes can just call `await chat(...)`
+chat = local_chat
+
+
+# ---------------------------------------------------
+# Now your nodes stay the same except they `await chat(...)`
+# ---------------------------------------------------
 
 class AsyncLogger:
     def __init__(self):
@@ -52,8 +94,11 @@ async def extract_books_node(state):
         '[{"title": "...", "author": "..."}, ...]\n\n'
         f"User input: {user_input}"
     )
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
-    content = response['message']['content']
+    response = await chat(
+        model="tiiuae/falcon-7b-instruct",
+        messages=[{"role":"user","content": prompt}]
+    )
+    content = response["message"]["content"]
 
     print("[extract_books_node] LLM raw response:", content)
     await logger.log(f"[extract_books_node] LLM response: {content}")
@@ -145,7 +190,11 @@ async def reasoning_node(state):
 )
 
     
-    response = ollama.chat(model="llama3", messages=[{"role": "user", "content": prompt}])
+    response = await chat(
+        model="tiiuae/falcon-7b-instruct",
+        messages=[{"role":"user","content": prompt}]
+    )
+    
     content = response['message']['content']
 
     print("[reasoning_node] LLM raw response:", content)
