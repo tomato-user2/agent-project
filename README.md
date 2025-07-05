@@ -1,14 +1,12 @@
 ---
-title: BookRecommender
-emoji: 🌖
-colorFrom: pink
+title: Book Recommendation Agent
+emoji: 📚
+colorFrom: yellow
 colorTo: pink
-sdk: gradio
-sdk_version: 5.29.1
-app_file: app.py
-pinned: false
-license: apache-2.0
+sdk: docker
+app_port: 7861  # whatever port your app serves on
 ---
+
 
 A simple book recommendation agent.
 Utilises ollama/llama3 and web search via DuckDuckGo.

@@ -3,3 +3,4 @@ ollama
 gradio
 httpx
 selectolax
+duckduckgo-search
