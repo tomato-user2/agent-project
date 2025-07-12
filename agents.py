@@ -88,7 +88,7 @@ async def extract_books_node(state):
         user_input = state.get("user_input", "")
         prompt = (
             "Extract all book titles and authors from the user input. Do not add books on your own, just take the user input."
-            "If a book is mentioned but the author is missing, fill it in using your knowledge. "
+            "If a book is mentioned but the author is missing, try to fill the missing author in using reasoning with your knowledge."
             "ONLY output a JSON list of dicts, like this:\n"
             '[{"title": "...", "author": "..."}, ...]\n'
             "Do not add any explanations, prefixes, or markdown. Just the JSON list.\n\n"
@@ -130,6 +130,96 @@ async def extract_books_node(state):
     except Exception as e:
         print("[extract_books_node] ❌ exception:", repr(e))
         print("[extract_books_node] Traceback:\n", traceback.format_exc())
+        raise
+
+# Node 1.1 New Node: Complete missing authors
+async def complete_authors_node(state):
+    try:
+        print("[complete_authors_node] 👉 enter")
+        books = state.get("extracted_books", [])
+        incomplete_books = [book for book in books if not book.get("author", "").strip()]
+
+        if not incomplete_books:
+            print("[complete_authors_node] No missing authors to complete.")
+            return {"extracted_books": books}
+
+        # Prepare prompt for LLM
+        prompt = (
+            "You are given a list of books with some missing authors. "
+            "For each book, fill in the correct author using your knowledge. "
+            "ONLY output a JSON list like this:\n"
+            '[{"title": "...", "author": "..."}, ...]\n\n'
+            "Do not add explanations, prefixes, or markdown. Only output the JSON list.\n\n"
+            f"Books with missing authors:\n{json.dumps(incomplete_books, ensure_ascii=False)}"
+        )
+
+        print("[complete_authors_node] Prompt sent to LLM:\n", prompt)
+
+        response = await chat(
+            model="mistralai/Mistral-7B-Instruct-v0.2",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        content = response["message"]["content"]
+
+        print("[complete_authors_node] Raw LLM response:\n", repr(content))
+        print(f"[complete_authors_node] Response type: {type(content)}, length: {len(content)}")
+
+        # Remove code blocks or markdown
+        cleaned_content = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", content, flags=re.IGNORECASE).strip()
+        print("[complete_authors_node] Cleaned response:\n", repr(cleaned_content))
+
+        completed_books_from_llm = []
+        try:
+            completed_books_from_llm = json.loads(cleaned_content)
+            print("[complete_authors_node] JSON parsed successfully.")
+        except json.JSONDecodeError as e:
+            print(f"[complete_authors_node] JSONDecodeError: {e}")
+            print("[complete_authors_node] Attempting fallback parsing with ast.literal_eval.")
+            try:
+                completed_books_from_llm = ast.literal_eval(cleaned_content)
+                print("[complete_authors_node] Fallback parsing successful.")
+            except Exception as e2:
+                print(f"[complete_authors_node] Fallback parsing failed: {e2}")
+                print("[complete_authors_node] Traceback:\n", traceback.format_exc())
+
+        # Merge back into the full book list
+        title_to_author = {book["title"]: book.get("author", "Unknown") for book in completed_books_from_llm}
+        completed_books = []
+        for book in books:
+            title = book.get("title", "").strip()
+            author = book.get("author", "").strip()
+            if not author:
+                # Fill from LLM result or fallback to DuckDuckGo
+                author = title_to_author.get(title, "").strip()
+                if not author:
+                    # DuckDuckGo fallback if still missing
+                    query = f"{title} book author"
+                    print(f"[complete_authors_node] Searching DuckDuckGo for author: {query}")
+                    search_results = await duckduckgo_search(query)
+
+                    found_author = "Unknown"
+                    if search_results:
+                        for res in search_results:
+                            snippet = res.get("snippet", "")
+                            title_text = res.get("title", "")
+                            match = re.search(r"by ([A-Z][a-z]+(?: [A-Z][a-z]+)*)", snippet + " " + title_text)
+                            if match:
+                                found_author = match.group(1)
+                                print(f"[complete_authors_node] Found author '{found_author}' for book '{title}'")
+                                break
+                    author = found_author
+
+            completed_books.append({
+                "title": title,
+                "author": author
+            })
+
+        print("[complete_authors_node] Completed books list:", completed_books)
+        return {"extracted_books": completed_books}
+
+    except Exception as e:
+        print("[complete_authors_node] ❌ exception:", repr(e))
+        print("[complete_authors_node] Traceback:\n", traceback.format_exc())
         raise
 
 # Node 2
@@ -208,6 +298,7 @@ async def reasoning_node(state):
         prompt = (
             "You are a helpful book recommendation expert. You are given a web search result. "
             "Analyze it and select the most relevant book recommendations. Explain why you recommend each book. "
+            "Do not recommend the same books from the user input!"
             "Output only a JSON list like this:\n"
             '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
             "Do not add any explanations, comments, or extra text. Only output the JSON list.\n\n"
@@ -269,11 +360,13 @@ def build_graph():
     graph = StateGraph(dict)
 
     graph.add_node("extract_books", extract_books_node)
+    graph.add_node("complete_authors", complete_authors_node)  # <-- New node
     graph.add_node("recommend_books", recommend_books_node)
     graph.add_node("reasoning", reasoning_node)
 
     # Define edges
-    graph.add_edge("extract_books", "recommend_books")
+    graph.add_edge("extract_books", "complete_authors")  # Modified
+    graph.add_edge("complete_authors", "recommend_books")  # Modified
     graph.add_edge("recommend_books", "reasoning")
     graph.add_edge("reasoning", END)
 
