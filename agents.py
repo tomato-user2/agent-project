@@ -64,7 +64,10 @@ def extract_json_array(text: str):
     # Extract the first [...] block
     match = re.search(r"(\[\s*{.*?}\s*\])", text, re.DOTALL)
     if not match:
-        return []
+        # Try to find any JSON array in the text
+        match = re.search(r"(\[.*?\])", text, re.DOTALL)
+        if not match:
+            return []
     
     json_str = match.group(1)
 
@@ -79,7 +82,88 @@ def extract_json_array(text: str):
             return ast.literal_eval(json_str)
         except Exception as e2:
             print("[extract_json_array] literal_eval failed:", e2)
-            return []
+            # Try to fix common JSON issues
+            try:
+                # Remove trailing commas
+                json_str = re.sub(r',\s*}', '}', json_str)
+                json_str = re.sub(r',\s*]', ']', json_str)
+                # Fix unquoted keys
+                json_str = re.sub(r'(\w+):', r'"\1":', json_str)
+                # Fix extra quotes around objects
+                json_str = re.sub(r'"\s*{\s*"', '{"', json_str)
+                json_str = re.sub(r'"\s*}\s*"', '"}', json_str)
+                # Fix missing commas between objects
+                json_str = re.sub(r'"\s*}\s*{', '"},{', json_str)
+                # Fix extra quotes around individual objects in arrays
+                json_str = re.sub(r'"\s*({[^}]+})\s*"', r'\1', json_str)
+                return json.loads(json_str)
+            except Exception as e3:
+                print("[extract_json_array] JSON fixing failed:", e3)
+                return []
+
+def safe_json_parse(content: str, fallback_value=None):
+    """Safely parse JSON content with multiple fallback strategies"""
+    if fallback_value is None:
+        fallback_value = []
+    
+    # Clean the content
+    cleaned_content = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", content, flags=re.IGNORECASE).strip()
+    
+    # Try direct JSON parsing
+    try:
+        return json.loads(cleaned_content)
+    except json.JSONDecodeError as e:
+        print(f"[safe_json_parse] JSONDecodeError: {e}")
+        
+        # Try to extract JSON array
+        extracted = extract_json_array(cleaned_content)
+        if extracted:
+            return extracted
+            
+        # Try ast.literal_eval
+        try:
+            return ast.literal_eval(cleaned_content)
+        except Exception as e2:
+            print(f"[safe_json_parse] literal_eval failed: {e2}")
+            
+            # Try to fix common JSON issues
+            try:
+                # Remove trailing commas
+                fixed_content = re.sub(r',\s*}', '}', cleaned_content)
+                fixed_content = re.sub(r',\s*]', ']', fixed_content)
+                # Fix unquoted keys
+                fixed_content = re.sub(r'(\w+):', r'"\1":', fixed_content)
+                # Fix single quotes to double quotes
+                fixed_content = fixed_content.replace("'", '"')
+                # Fix extra quotes around objects
+                fixed_content = re.sub(r'"\s*{\s*"', '{"', fixed_content)
+                fixed_content = re.sub(r'"\s*}\s*"', '"}', fixed_content)
+                # Fix missing commas between objects
+                fixed_content = re.sub(r'"\s*}\s*{', '"},{', fixed_content)
+                # Fix extra quotes around individual objects in arrays
+                fixed_content = re.sub(r'"\s*({[^}]+})\s*"', r'\1', fixed_content)
+                return json.loads(fixed_content)
+            except Exception as e3:
+                print(f"[safe_json_parse] JSON fixing failed: {e3}")
+                return fallback_value
+
+def merge_state(current_state: dict, new_data: dict) -> dict:
+    """Safely merge new data into current state, preserving existing data"""
+    merged_state = current_state.copy()
+    for key, value in new_data.items():
+        if key in merged_state:
+            # If both are lists, extend the current list
+            if isinstance(merged_state[key], list) and isinstance(value, list):
+                merged_state[key].extend(value)
+            # If both are strings, concatenate them
+            elif isinstance(merged_state[key], str) and isinstance(value, str):
+                merged_state[key] += "\n" + value
+            # Otherwise, overwrite
+            else:
+                merged_state[key] = value
+        else:
+            merged_state[key] = value
+    return merged_state
 
 # Node 1: Extract books from user input
 async def extract_books_node(state):
@@ -89,9 +173,14 @@ async def extract_books_node(state):
         prompt = (
             "Extract all book titles and authors from the user input. Do not add books on your own, just take the user input."
             "If a book is mentioned but the author is missing, try to fill the missing author in using reasoning with your knowledge."
-            "ONLY output a JSON list of dicts, like this:\n"
-            '[{"title": "...", "author": "..."}, ...]\n'
-            "Do not add any explanations, prefixes, or markdown. Just the JSON list.\n\n"
+            "IMPORTANT: Output ONLY a valid JSON array with this exact format:\n"
+            '[{"title": "Book Title", "author": "Author Name"}]\n'
+            "Rules:\n"
+            "- Use double quotes for all strings\n"
+            "- No trailing commas\n"
+            "- No markdown formatting or code blocks\n"
+            "- No explanations or extra text\n"
+            "- If no books found, return empty array: []\n\n"
             f"User input: {user_input}"
         )
         print("[extract_books_node] Prompt sent to LLM:\n", prompt)
@@ -105,27 +194,95 @@ async def extract_books_node(state):
         print("[extract_books_node] Raw LLM response:\n", repr(content))
         print(f"[extract_books_node] Response type: {type(content)}, length: {len(content)}")
 
-        # Remove code blocks or markdown again here just to be sure
-        cleaned_content = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", content, flags=re.IGNORECASE).strip()
-        print("[extract_books_node] Cleaned response:\n", repr(cleaned_content))
+        # Use the new safe JSON parsing function
+        books = safe_json_parse(content, fallback_value=[])
+        
+        # If parsing completely failed, try to extract book titles manually
+        if not books and content:
+            print("[extract_books_node] JSON parsing failed, attempting manual extraction")
+            # Look for patterns like "title" or "book" in the content
+            lines = content.split('\n')
+            manual_books = []
+            for line in lines:
+                line = line.strip()
+                if any(keyword in line.lower() for keyword in ['title', 'book', 'author']):
+                    # Try to extract title and author from the line
+                    title_match = re.search(r'"title":\s*"([^"]+)"', line)
+                    author_match = re.search(r'"author":\s*"([^"]+)"', line)
+                    if title_match:
+                        title = title_match.group(1)
+                        author = author_match.group(1) if author_match else "Unknown"
+                        manual_books.append({"title": title, "author": author})
+            
+            if manual_books:
+                books = manual_books
+                print("[extract_books_node] Manual extraction successful:", books)
+            else:
+                # Last resort: try to extract from the specific malformed pattern we saw
+                print("[extract_books_node] Attempting pattern-based extraction")
+                # Look for patterns like "title": "Book Name"
+                title_matches = re.findall(r'"title":\s*"([^"]+)"', content)
+                author_matches = re.findall(r'"author":\s*"([^"]+)"', content)
+                
+                if title_matches:
+                    for i, title in enumerate(title_matches):
+                        author = author_matches[i] if i < len(author_matches) else "Unknown"
+                        manual_books.append({"title": title, "author": author})
+                    
+                    if manual_books:
+                        books = manual_books
+                        print("[extract_books_node] Pattern-based extraction successful:", books)
+        
+        # Additional fix: if books is a list but contains malformed strings, try to fix them
+        if isinstance(books, list) and books:
+            print("[extract_books_node] Checking for malformed book entries...")
+            fixed_books = []
+            for book in books:
+                if isinstance(book, str):
+                    # Try to parse the string as JSON
+                    try:
+                        # Remove extra quotes around the object
+                        cleaned_book = book.strip()
+                        if cleaned_book.startswith('"') and cleaned_book.endswith('"'):
+                            cleaned_book = cleaned_book[1:-1]
+                        parsed_book = json.loads(cleaned_book)
+                        if isinstance(parsed_book, dict) and parsed_book.get("title"):
+                            fixed_books.append(parsed_book)
+                    except:
+                        # Try regex extraction as fallback
+                        title_match = re.search(r'"title":\s*"([^"]+)"', book)
+                        author_match = re.search(r'"author":\s*"([^"]+)"', book)
+                        if title_match:
+                            title = title_match.group(1)
+                            author = author_match.group(1) if author_match else "Unknown"
+                            fixed_books.append({"title": title, "author": author})
+                elif isinstance(book, dict) and book.get("title"):
+                    fixed_books.append(book)
+            
+            if fixed_books:
+                books = fixed_books
+                print("[extract_books_node] Fixed malformed book entries:", books)
+        
+        print("[extract_books_node] Parsed books:", books)
 
-        books = []
-        try:
-            books = json.loads(cleaned_content)
-            print("[extract_books_node] JSON parsed successfully.")
-        except json.JSONDecodeError as e:
-            print(f"[extract_books_node] JSONDecodeError: {e}")
-            print("[extract_books_node] Attempting fallback parsing with ast.literal_eval.")
-            try:
-                books = ast.literal_eval(cleaned_content)
-                print("[extract_books_node] Fallback parsing successful.")
-            except Exception as e2:
-                print(f"[extract_books_node] Fallback parsing failed: {e2}")
-                print("[extract_books_node] Traceback:\n", traceback.format_exc())
-
-        print("[extract_books_node] Extracted books:", books)
-        print("[extract_books_node] 👈 exit with", {"extracted_books": books})
-        return {"extracted_books": books}
+        # Ensure books is a list and each book has required fields
+        if not isinstance(books, list):
+            books = []
+        
+        # Validate and clean each book entry
+        validated_books = []
+        for book in books:
+            if isinstance(book, dict):
+                validated_book = {
+                    "title": str(book.get("title", "")).strip(),
+                    "author": str(book.get("author", "")).strip()
+                }
+                if validated_book["title"]:  # Only add if title is not empty
+                    validated_books.append(validated_book)
+        
+        print("[extract_books_node] Validated books:", validated_books)
+        print("[extract_books_node] 👈 exit with", {"extracted_books": validated_books})
+        return {"extracted_books": validated_books}
 
     except Exception as e:
         print("[extract_books_node] ❌ exception:", repr(e))
@@ -147,9 +304,14 @@ async def complete_authors_node(state):
         prompt = (
             "You are given a list of books with some missing authors. "
             "For each book, fill in the correct author using your knowledge. "
-            "ONLY output a JSON list like this:\n"
-            '[{"title": "...", "author": "..."}, ...]\n\n'
-            "Do not add explanations, prefixes, or markdown. Only output the JSON list.\n\n"
+            "IMPORTANT: Output ONLY a valid JSON array with this exact format:\n"
+            '[{"title": "Book Title", "author": "Author Name"}]\n'
+            "Rules:\n"
+            "- Use double quotes for all strings\n"
+            "- No trailing commas\n"
+            "- No markdown formatting or code blocks\n"
+            "- No explanations or extra text\n"
+            "- Return all books, not just the ones with missing authors\n\n"
             f"Books with missing authors:\n{json.dumps(incomplete_books, ensure_ascii=False)}"
         )
 
@@ -164,23 +326,9 @@ async def complete_authors_node(state):
         print("[complete_authors_node] Raw LLM response:\n", repr(content))
         print(f"[complete_authors_node] Response type: {type(content)}, length: {len(content)}")
 
-        # Remove code blocks or markdown
-        cleaned_content = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", content, flags=re.IGNORECASE).strip()
-        print("[complete_authors_node] Cleaned response:\n", repr(cleaned_content))
-
-        completed_books_from_llm = []
-        try:
-            completed_books_from_llm = json.loads(cleaned_content)
-            print("[complete_authors_node] JSON parsed successfully.")
-        except json.JSONDecodeError as e:
-            print(f"[complete_authors_node] JSONDecodeError: {e}")
-            print("[complete_authors_node] Attempting fallback parsing with ast.literal_eval.")
-            try:
-                completed_books_from_llm = ast.literal_eval(cleaned_content)
-                print("[complete_authors_node] Fallback parsing successful.")
-            except Exception as e2:
-                print(f"[complete_authors_node] Fallback parsing failed: {e2}")
-                print("[complete_authors_node] Traceback:\n", traceback.format_exc())
+        # Use the new safe JSON parsing function
+        completed_books_from_llm = safe_json_parse(content, fallback_value=[])
+        print("[complete_authors_node] Parsed completed books:", completed_books_from_llm)
 
         # Merge back into the full book list
         title_to_author = {book["title"]: book.get("author", "Unknown") for book in completed_books_from_llm}
@@ -214,8 +362,19 @@ async def complete_authors_node(state):
                 "author": author
             })
 
-        print("[complete_authors_node] Completed books list:", completed_books)
-        return {"extracted_books": completed_books}
+        # Validate the completed books
+        validated_books = []
+        for book in completed_books:
+            if isinstance(book, dict):
+                validated_book = {
+                    "title": str(book.get("title", "")).strip(),
+                    "author": str(book.get("author", "")).strip()
+                }
+                if validated_book["title"]:  # Only add if title is not empty
+                    validated_books.append(validated_book)
+        
+        print("[complete_authors_node] Validated completed books:", validated_books)
+        return {"extracted_books": validated_books}
 
     except Exception as e:
         print("[complete_authors_node] ❌ exception:", repr(e))
@@ -299,9 +458,14 @@ async def reasoning_node(state):
             "You are a helpful book recommendation expert. You are given a web search result. "
             "Analyze it and select the most relevant book recommendations. Explain why you recommend each book. "
             "Do not recommend the same books from the user input!"
-            "Output only a JSON list like this:\n"
-            '[{"title": "...", "reason": "...", "link": "..."}, ...]\n\n'
-            "Do not add any explanations, comments, or extra text. Only output the JSON list.\n\n"
+            "IMPORTANT: Output ONLY a valid JSON array with this exact format:\n"
+            '[{"title": "Book Title", "reason": "Why this book is recommended", "link": "URL"}]\n'
+            "Rules:\n"
+            "- Use double quotes for all strings\n"
+            "- No trailing commas\n"
+            "- No markdown formatting or code blocks\n"
+            "- No explanations or extra text\n"
+            "- If no good recommendations, return empty array: []\n\n"
             f"Books found from search:\n{recommendations_text}"
         )
 
@@ -316,42 +480,56 @@ async def reasoning_node(state):
 
         print("[reasoning_node] Raw LLM response:\n", repr(content))
         print(f"[reasoning_node] Response type: {type(content)}, length: {len(content)}")
+        print("[reasoning_node] Response content (first 500 chars):", content[:500])
 
-        # Clean the content from code blocks, markdown, etc.
-        cleaned_content = re.sub(r"```(?:json)?\n?|</?(?:pre|code|p)>", "", content, flags=re.IGNORECASE).strip()
-        print("[reasoning_node] Cleaned response:\n", repr(cleaned_content))
-
-        final_recommendations = []
-        try:
-            final_recommendations = json.loads(cleaned_content)
-            print("[reasoning_node] JSON parsed successfully.")
-        except json.JSONDecodeError as e:
-            print(f"[reasoning_node] JSONDecodeError: {e}")
-            print("[reasoning_node] Attempting fallback parsing with ast.literal_eval.")
-            try:
-                final_recommendations = ast.literal_eval(cleaned_content)
-                print("[reasoning_node] Fallback parsing successful.")
-            except Exception as e2:
-                print(f"[reasoning_node] Fallback parsing failed: {e2}")
-                print("[reasoning_node] Traceback:\n", traceback.format_exc())
+        # Use the new safe JSON parsing function
+        final_recommendations = safe_json_parse(content, fallback_value=[])
+        print("[reasoning_node] Parsed final recommendations:", final_recommendations)
+        print("[reasoning_node] Type of final_recommendations:", type(final_recommendations))
+        print("[reasoning_node] Length of final_recommendations:", len(final_recommendations) if isinstance(final_recommendations, list) else "Not a list")
 
         # Compose final reasoning combining initial and LLM results
         final_reasoning = initial_reasoning + "\n\nFinal reasoning:\n"
         for rec in final_recommendations:
             final_reasoning += f"✅ Recommended: {rec.get('title', 'Unknown')} - {rec.get('reason', 'No reason provided.')}\n"
 
-        print("[reasoning_node] Final recommendations extracted:", final_recommendations)
+        # Validate final recommendations
+        validated_recommendations = []
+        if isinstance(final_recommendations, list):
+            for rec in final_recommendations:
+                if isinstance(rec, dict):
+                    validated_rec = {
+                        "title": str(rec.get("title", "")).strip(),
+                        "reason": str(rec.get("reason", "")).strip(),
+                        "link": str(rec.get("link", "")).strip()
+                    }
+                    if validated_rec["title"]:  # Only add if title is not empty
+                        validated_recommendations.append(validated_rec)
+        
+        print("[reasoning_node] Validated final recommendations:", validated_recommendations)
         print("[reasoning_node] Final reasoning:\n", final_reasoning)
 
-        return {
-            "final_recommendations": final_recommendations,
+        # Return the new state with our data
+        result_state = {
+            "final_recommendations": validated_recommendations,
             "final_reasoning": final_reasoning
         }
+        
+        print("[reasoning_node] Returning state with keys:", list(result_state.keys()))
+        print("[reasoning_node] 👈 exit with", result_state)
+        
+        # Try returning as a dict to ensure proper state handling
+        return dict(result_state)
 
     except Exception as e:
         print("[reasoning_node] ❌ exception:", repr(e))
         print("[reasoning_node] Traceback:\n", traceback.format_exc())
-        raise
+        # Return a safe fallback state instead of raising
+        print("[reasoning_node] Returning fallback state due to exception")
+        return {
+            "final_recommendations": [],
+            "final_reasoning": f"Error in reasoning node: {str(e)}"
+        }
 
 
 
