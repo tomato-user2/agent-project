@@ -1,4 +1,4 @@
-# [Book Recommender]
+# Book Recommender
 
 ## Repository Link
 
@@ -11,13 +11,13 @@ or here:
 
 ## Description
 
-[A simple book recommendation agent.
+A simple book recommendation agent.
 Utilises ollama/llama3 and web search via DuckDuckGo.
-Usage is pretty self explanatory.]
+Usage is pretty self explanatory.
 
 ### Task Type
 
-[Agentic RAG with LangGraph]
+Agentic RAG with LangGraph
 
 ### Results Summary
 
